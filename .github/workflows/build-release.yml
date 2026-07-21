@@ -11,6 +11,12 @@ on:
 permissions:
   contents: write
 
+# Force UTF-8 for all Python in the pipeline (Windows consoles default to cp1252
+# and would crash on non-ASCII output).
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   build:
     strategy:

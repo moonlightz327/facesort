@@ -16,7 +16,7 @@ STATIC = Path(__file__).resolve().parent.parent / "facesort" / "gui" / "static"
 def main() -> int:
     index = STATIC / "index.html"
     if not index.exists():
-        print(f"未找到 {index}，请先 npm run build", file=sys.stderr)
+        print(f"{index} not found; run `npm run build` first", file=sys.stderr)
         return 1
     html = index.read_text(encoding="utf-8")
 
@@ -43,7 +43,8 @@ def main() -> int:
             f.unlink()
         assets.rmdir()
     size_kb = len(html.encode("utf-8")) / 1024
-    print(f"已内联为单文件 index.html（{size_kb:.0f} KB）")
+    # ASCII-only: Windows consoles default to cp1252 and choke on non-ASCII.
+    print(f"inlined single-file index.html ({size_kb:.0f} KB)")
     return 0
 
 
