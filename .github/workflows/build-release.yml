@@ -1,0 +1,61 @@
+name: Build & Release
+
+# Push a tag like v0.1.0 to build both installers and publish a GitHub Release.
+# Or run manually (Actions tab -> Run workflow) to just get the build artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14        # Apple Silicon
+            artifact: FaceSort.dmg
+            asset: dist/FaceSort.dmg
+          - os: windows-latest
+            artifact: FaceSort.exe
+            asset: dist/FaceSort.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync Python deps
+        run: uv sync
+
+      - name: Build front-end
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package (PyInstaller)
+        run: uv run pyinstaller packaging/FaceSort.spec --noconfirm --distpath dist --workpath build
+
+      - name: Make DMG (macOS)
+        if: runner.os == 'macOS'
+        run: bash packaging/make_dmg.sh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.asset }}
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}

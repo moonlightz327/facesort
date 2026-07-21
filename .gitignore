@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Build artifacts (release binaries go to GitHub Releases, not the repo)
+/build/
+/dist/
+packaging/FaceSort.iconset/
+
+# Front-end
+webui/node_modules/
+webui/dist/
+
+# Generated single-file front-end bundle (rebuilt by `npm run build`)
+facesort/gui/static/
+
+# OS / editor
+.DS_Store
+*.swp
