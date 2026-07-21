@@ -25,7 +25,7 @@ Grab the installer for your system from the [**Releases**](../../releases) page:
 | macOS | `FaceSort.dmg` | Open it, drag **FaceSort** into **Applications**. |
 | Windows | `FaceSort.exe` | Just run it (single file). |
 
-- **First launch may show a warning** because the app isn't signed with a paid developer certificate. On macOS: right‑click the app → **Open** → **Open**. On Windows: **More info** → **Run anyway**.
+- **First launch may show a warning**. On macOS: right‑click the app → **Open** → **Open**. On Windows: **More info** → **Run anyway**.
 - The first time you sort photos, it downloads the face model once (~300 MB). After that it works offline.
 
 ### How to use
@@ -93,7 +93,7 @@ FaceSort（分图）会看每一张照片、认出里面是谁，然后把它复
 | macOS | `FaceSort.dmg` | 打开后把 **FaceSort** 拖进 **Applications**。 |
 | Windows | `FaceSort.exe` | 单文件，直接双击运行。 |
 
-- **首次打开可能弹安全提示**（因为没有购买开发者签名证书）。macOS：右键点应用 →**打开** →**打开**。Windows：点 **更多信息** → **仍要运行**。
+- **首次打开可能弹安全提示**。macOS：右键点应用 →**打开** →**打开**。Windows：点 **更多信息** → **仍要运行**。
 - 第一次整理照片时会自动下载一次人脸模型（约 300MB），之后就能离线使用。
 
 ### 怎么用
