@@ -52,6 +52,7 @@ def build_sample_library(
     cache: Optional[EmbeddingCache] = None,
     on_progress: Optional[ProgressCallback] = None,
     workers: int = 0,
+    decode_max_side: Optional[int] = None,
 ) -> SampleLibrary:
     """samples/<person>/*.jpg -> library. Multiple faces in a sample photo:
     take the largest and warn (edge #5).
@@ -77,7 +78,7 @@ def build_sample_library(
         images = sorted(p for p in person_dir.rglob("*") if p.is_file() and is_image_file(p))
         count = 0
         for img_path, analysis, exc, _cached in _analyze_many(
-            engine, images, cache=cache, workers=workers
+            engine, images, cache=cache, workers=workers, max_side=decode_max_side
         ):
             if exc is not None:
                 library.warnings.append(f"样本图片无法读取，跳过: {img_path} ({exc})")
@@ -110,7 +111,8 @@ def build_sample_library(
     return library
 
 
-def _analyze_many(engine, paths, cache=None, workers: int = 0, cancel=None):
+def _analyze_many(engine, paths, cache=None, workers: int = 0, cancel=None,
+                  max_side=None):
     """Cache-first analysis of `paths`, yielding `(path, analysis, exception,
     was_cached)` in input order.
 
@@ -124,7 +126,7 @@ def _analyze_many(engine, paths, cache=None, workers: int = 0, cancel=None):
             hit = cache.get(path)
             if hit is not None:
                 return hit, True
-        analysis = engine.analyze(path)
+        analysis = engine.analyze(path, max_side=max_side)
         if cache is not None:
             cache.put(path, analysis)
         return analysis, False
@@ -218,8 +220,11 @@ def run_pipeline(
 
     with EmbeddingCache(cache_path) as cache:
         # 1. Sample library (hard errors surface before any file operation)
+        # Samples go through the same decode path as the photos so the two
+        # sets of embeddings are produced identically.
         library = build_sample_library(engine, config.samples_dir, cache, on_progress,
-                                       workers=config.workers)
+                                       workers=config.workers,
+                                       decode_max_side=config.decode_max_side)
         matcher = Matcher(library, threshold=config.threshold,
                           ambiguity_margin=config.ambiguity_margin)
 
@@ -239,6 +244,7 @@ def run_pipeline(
         for path, analysis, exc, was_cached in _analyze_many(
             engine, [p for p, _ in units], cache=cache,
             workers=config.workers, cancel=cancel,
+            max_side=config.decode_max_side,
         ):
             done += 1
             if exc is not None:
@@ -368,6 +374,7 @@ def run_cluster_pipeline(
         for path, analysis, exc, was_cached in _analyze_many(
             engine, [p for p, _ in units], cache=cache,
             workers=config.workers, cancel=cancel,
+            max_side=config.decode_max_side,
         ):
             done += 1
             if exc is not None:

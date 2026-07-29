@@ -20,7 +20,7 @@ class FakeEngine:
         self.faces_by_name = faces_by_name or {}
         self.unreadable = set(unreadable)
 
-    def analyze(self, path):
+    def analyze(self, path, max_side=None):
         if path.name in self.unreadable:
             raise ImageReadError(f"corrupt: {path.name}")
         n = self.faces_by_name.get(path.name, 1)

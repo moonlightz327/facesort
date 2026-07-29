@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .imageio import load_image_bgr
+from .imageio import load_image_bgr_scaled
 from .models import Face, PhotoAnalysis
 
 
@@ -58,13 +58,23 @@ class FaceEngine:
             self._app = app
         return self._app
 
-    def analyze(self, path: Path) -> PhotoAnalysis:
+    def analyze(self, path: Path, max_side: Optional[int] = None) -> PhotoAnalysis:
         """Detect + embed all faces in one image. Raises ImageReadError for
-        unreadable files."""
-        img = load_image_bgr(Path(path))
-        return self.analyze_array(img, path=Path(path))
+        unreadable files.
 
-    def analyze_array(self, img_bgr: np.ndarray, path: Path) -> PhotoAnalysis:
+        `max_side` decodes large JPEGs at a reduced size (see imageio); results
+        still come back in original-image pixels, so callers never need to know
+        it happened."""
+        path = Path(path)
+        img, scale = load_image_bgr_scaled(path, max_side)
+        return self.analyze_array(img, path=path, scale=scale)
+
+    def analyze_array(self, img_bgr: np.ndarray, path: Path,
+                      scale: float = 1.0) -> PhotoAnalysis:
+        """`scale` maps coordinates in `img_bgr` back to the original image, so
+        bboxes and dimensions stay in full-resolution pixels regardless of the
+        size the image was decoded at. Keeps min_face, subject scoring and the
+        GUI's face crops working in the units they already assume."""
         app = self._ensure_loaded()
         h, w = img_bgr.shape[:2]
         faces = []
@@ -72,10 +82,11 @@ class FaceEngine:
             emb = getattr(f, "normed_embedding", None)
             if emb is None:
                 emb = f.embedding / np.linalg.norm(f.embedding)
-            x1, y1, x2, y2 = [float(v) for v in f.bbox]
+            x1, y1, x2, y2 = [float(v) * scale for v in f.bbox]
             faces.append(Face(
                 bbox=(x1, y1, x2, y2),
                 embedding=np.asarray(emb, dtype=np.float32),
                 det_score=float(getattr(f, "det_score", 1.0)),
             ))
-        return PhotoAnalysis(path=path, width=w, height=h, faces=faces)
+        return PhotoAnalysis(path=path, width=round(w * scale),
+                             height=round(h * scale), faces=faces)

@@ -33,6 +33,7 @@ export default function App() {
     move: false,
     groupSubfolders: false,
     workers: 0, // 0 = auto-size the analyze thread pool
+    decodeMaxSide: 1400, // 0 = decode at full resolution (slower)
     clusterNames: {}, // 人物N -> 用户自定义名字（聚类模式）
   });
   const [preview, setPreview] = useState(null); // dry-run result
@@ -191,5 +192,6 @@ function camel(defaults = {}) {
     minFace: defaults.minFace,
     move: defaults.move,
     workers: defaults.workers ?? 0,
+    decodeMaxSide: defaults.decodeMaxSide ?? 1400,
   };
 }

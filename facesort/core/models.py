@@ -145,6 +145,10 @@ class Config:
     ambiguity_margin: float = 0.05
     cache_path: Optional[Path] = None      # default: <output_dir>/.facesort_cache.sqlite
     workers: int = 0                       # analyze concurrency; 0 = auto
+    # Decode big JPEGs at reduced size before detection (0 = always full res).
+    # Detection downscales to 640x640 either way, so this costs almost nothing
+    # in accuracy while cutting decode time ~3x on 24MP files.
+    decode_max_side: int = 1400
     # Cluster mode only: rename auto-detected groups before anything is written,
     # e.g. {"人物1": "张三"}. Unlisted clusters keep their 人物N name.
     cluster_names: dict[str, str] = field(default_factory=dict)
@@ -168,6 +172,7 @@ class Config:
             "group_subfolders": self.group_subfolders,
             "ambiguity_margin": self.ambiguity_margin,
             "workers": self.workers,
+            "decode_max_side": self.decode_max_side,
             "cluster_names": dict(self.cluster_names),
         }
 

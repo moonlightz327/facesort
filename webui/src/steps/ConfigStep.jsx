@@ -234,6 +234,20 @@ export default function ConfigStep({ boot, config, setConfig, goto }) {
               <option value={6}>6</option>
             </select>
           </div>
+          <label className="flex items-center justify-between gap-4 text-sm">
+            <span>
+              <span className="font-medium">按原始分辨率解码</span>
+              <span className="ml-2 text-xs text-slate-400">
+                默认解码到约一半尺寸，大图快约 1.8 倍且识别结果几乎无差别；勾选后更慢
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={(config.decodeMaxSide ?? 1400) === 0}
+              onChange={(e) => set({ decodeMaxSide: e.target.checked ? 0 : 1400 })}
+              className="h-4 w-4 shrink-0 rounded accent-indigo-600"
+            />
+          </label>
         </Card>
       )}
 

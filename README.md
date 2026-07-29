@@ -51,7 +51,7 @@ Naming a group and hitting **Save** stores its clearest front‑facing shots in 
 - **Does it support RAW?** Yes — CR2/CR3/NEF/ARW/DNG and more. If a shot has both a RAW and a JPEG, they're kept together.
 - **Changing a setting and re‑sorting — is it slow?** No. Results are cached, so re‑runs are near‑instant.
 - **The model download keeps failing / times out.** "Download model" tries several built‑in mirrors in turn, and you can pick a specific one from the dropdown. If they're all blocked, use **import zip**: download `buffalo_l.zip` on a machine that can reach the internet, copy it over, and select it.
-- **Can it go faster?** It already analyzes photos in parallel based on your CPU (typically 1.5–2× faster). "Parallel workers" under advanced settings lets you tune it, but setting it too high makes things slower.
+- **Can it go faster?** It already analyzes photos in parallel and decodes large JPEGs at half size (detection runs at 640×640 either way), which together make a 24MP shoot roughly 2–3× faster than a naive pass. Both are tunable under advanced settings — turn on "decode at full resolution" if you'd rather have the last 0.2% of recognition accuracy.
 - **Is my data uploaded anywhere?** No. Everything runs locally on your machine.
 
 ### For power users
@@ -123,7 +123,7 @@ FaceSort（分图）会看每一张照片、认出里面是谁，然后把它复
 - **支持 RAW 吗？** 支持，CR2/CR3/NEF/ARW/DNG 等都行。同一张照片如果同时有 RAW 和 JPEG，会放到一起。
 - **改个设置重新整理会很慢吗？** 不会。结果有缓存，重跑几乎是秒出。
 - **下载模型一直失败 / 提示连接超时？** 点"自动下载模型"会依次试内置的几个加速镜像；也可以在下拉里指定某一个。全都不通就用**手动导入 zip**：在能上网的机器上下载 `buffalo_l.zip`，拷过来选中即可。
-- **能更快吗？** 默认已经按 CPU 核数并行分析（一般快 1.5–2 倍）。高级选项里的"并行处理数"可以手动调，但调太高反而会变慢。
+- **能更快吗？** 默认已经并行分析 + 把大 JPEG 解码到一半尺寸（反正检测都在 640×640 上跑），24MP 的片子合起来比朴素处理快约 2–3 倍。两者都能在高级选项里调；想要那最后 0.2% 的识别精度，可以勾选"按原始分辨率解码"。
 - **我的照片会被上传吗？** 不会，全部在你本机运行。
 
 ### 进阶用法

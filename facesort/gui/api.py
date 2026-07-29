@@ -75,6 +75,7 @@ class Api:
                 "minFace": 40,
                 "move": False,
                 "workers": 0,
+                "decodeMaxSide": 1400,
             },
             "libraryPath": str(self.library.root),
             "model": model_status(),
@@ -265,6 +266,7 @@ class Api:
             weights=SubjectWeights(**weights) if weights else SubjectWeights(),
             group_subfolders=bool(cfg.get("groupSubfolders", False)),
             workers=int(cfg.get("workers", 0) or 0),
+            decode_max_side=int(cfg.get("decodeMaxSide", 1400) or 0),
             cluster_names={str(k): str(v) for k, v in
                            (cfg.get("clusterNames") or {}).items() if str(v).strip()},
         )

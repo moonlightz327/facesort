@@ -62,6 +62,7 @@ def run(
     group_subfolders: bool = typer.Option(False, "--group-subfolders", help="合影内按人名组合建子文件夹（张三+李四）"),
     cache: Optional[Path] = typer.Option(None, "--cache", help="SQLite 缓存路径，默认 <output>/.facesort_cache.sqlite"),
     workers: int = typer.Option(0, "--workers", help="并行分析线程数，0=自动（按 CPU 核数取小值）"),
+    full_decode: bool = typer.Option(False, "--full-decode", help="按原始分辨率解码（更慢，默认解码到约一半尺寸以加速，精度几乎无差别）"),
     plan_json: bool = typer.Option(False, "--plan-json", help="dry-run 时以 JSON 输出计划（默认表格）"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="打印每个执行动作"),
 ):
@@ -81,6 +82,7 @@ def run(
             dry_run=dry_run,
             min_face=min_face,
             workers=workers,
+            decode_max_side=0 if full_decode else 1400,
             weights=SubjectWeights.parse(weights) if weights else SubjectWeights(),
             no_face_dir=no_face_dir,
             unknown_dir=unknown_dir,
@@ -128,6 +130,7 @@ def cluster(
     dry_run: bool = typer.Option(False, "--dry-run", help="只打印计划，不动任何文件"),
     min_face: int = typer.Option(40, "--min-face", help="最小人脸边长（像素）"),
     workers: int = typer.Option(0, "--workers", help="并行分析线程数，0=自动（按 CPU 核数取小值）"),
+    full_decode: bool = typer.Option(False, "--full-decode", help="按原始分辨率解码（更慢，默认解码到约一半尺寸以加速，精度几乎无差别）"),
     name: list[str] = typer.Option(None, "--name", help="给分组命名，可重复: --name 人物1=张三"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="打印每个执行动作"),
 ):
@@ -156,6 +159,7 @@ def cluster(
             dry_run=dry_run,
             min_face=min_face,
             workers=workers,
+            decode_max_side=0 if full_decode else 1400,
             cluster_names=cluster_names,
         )
         cancel = threading.Event()
