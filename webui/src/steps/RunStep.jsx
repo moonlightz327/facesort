@@ -2,28 +2,46 @@ import React, { useEffect, useRef, useState } from "react";
 import { api, onEvent } from "../api.js";
 import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
+import ModelProgress from "../ModelProgress.jsx";
 
-export default function RunStep({ config, people, setPeople, goto }) {
+export default function RunStep({ config, people, setPeople, goto,
+                                 runResult, setRunResult, setTask, startOver }) {
   const [progress, setProgress] = useState({ stage: "prepare", done: 0, total: 0 });
-  const [running, setRunning] = useState(true);
-  const [result, setResult] = useState(null);
+  const [modelProgress, setModelProgress] = useState(null);
+  // A finished run lives in app state, so coming back to this step shows the
+  // previous result instead of silently copying every photo a second time.
+  const [running, setRunning] = useState(!runResult);
   const [error, setError] = useState(null);
+  const [cancelled, setCancelled] = useState(false);
+  const result = runResult;
   const started = useRef(false);
 
   useEffect(() => {
-    const off = onEvent((e) => e.event === "progress" && setProgress(e));
+    const off = onEvent((e) => {
+      if (e.event === "progress") setProgress(e);
+      if (e.event === "model") setModelProgress(e.phase === "done" ? null : e);
+    });
     return off;
   }, []);
 
   useEffect(() => {
-    if (started.current) return;
+    if (started.current || runResult) return;
     started.current = true;
+    setTask?.("organize");
     api
       .organize(config)
-      .then((r) => (r.ok ? setResult(r) : setError(r.error)))
+      .then((r) => {
+        if (r.ok) setRunResult(r);
+        else if (r.cancelled) setCancelled(true);
+        else setError(r.error);
+      })
       .catch((e) => setError(String(e)))
-      .finally(() => setRunning(false));
-  }, [config]);
+      .finally(() => {
+        setRunning(false);
+        setModelProgress(null);
+        setTask?.(null);
+      });
+  }, [config, runResult, setRunResult, setTask]);
 
   if (running) {
     const pct = progress.total ? (progress.done / progress.total) * 100 : 0;
@@ -37,20 +55,44 @@ export default function RunStep({ config, people, setPeople, goto }) {
       <div>
         <StepHeader title="正在整理" desc="正在把照片归入对应文件夹，请稍候。" />
         <Card className="p-8">
-          <div className="mb-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
-            <Spinner className="w-5 h-5 text-indigo-600" />
-            {label}
-          </div>
-          <ProgressBar value={pct} />
-          {progress.current && (
-            <div className="mt-3 truncate font-mono text-xs text-slate-400">{progress.current}</div>
+          {modelProgress ? (
+            <ModelProgress progress={modelProgress} />
+          ) : (
+            <>
+              <div className="mb-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
+                <Spinner className="w-5 h-5 text-indigo-600" />
+                {label}
+              </div>
+              <ProgressBar value={pct} />
+              {progress.current && (
+                <div className="mt-3 truncate font-mono text-xs text-slate-400">
+                  {progress.current}
+                </div>
+              )}
+            </>
           )}
           <div className="mt-6">
             <Button variant="outline" onClick={() => api.cancel()}>
-              <Icon name="x" className="w-4 h-4" /> 取消（已完成的保留）
+              <Icon name="x" className="w-4 h-4" />
+              {modelProgress ? "取消下载" : "取消（已完成的保留）"}
             </Button>
           </div>
         </Card>
+      </div>
+    );
+  }
+
+  if (cancelled) {
+    return (
+      <div>
+        <StepHeader title="已取消" desc="整理尚未开始，没有任何文件被改动。" />
+        <Card className="p-6">
+          <div className="flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
+            <Icon name="x" className="w-5 h-5 shrink-0 text-slate-400" />
+            你取消了本次整理。
+          </div>
+        </Card>
+        <StepNav onBack={() => goto(2)} backLabel="返回预览" />
       </div>
     );
   }
@@ -144,15 +186,14 @@ export default function RunStep({ config, people, setPeople, goto }) {
         运行报告已保存到 <span className="font-mono">{result.outputDir}/report.json</span>
       </div>
 
-      <StepNav
-        onBack={() => goto(0)}
-        backLabel="整理另一批"
-        right={
-          <Button variant="subtle" onClick={() => api.openPath(result.outputDir)}>
-            <Icon name="folder" className="w-4 h-4" /> 打开输出目录
-          </Button>
-        }
-      />
+      <div className="mt-8 flex items-center justify-between border-t border-slate-200 pt-5 dark:border-slate-800">
+        <Button variant="outline" onClick={startOver}>
+          <Icon name="refresh" className="w-4 h-4" /> 整理另一批
+        </Button>
+        <Button variant="subtle" onClick={() => api.openPath(result.outputDir)}>
+          <Icon name="folder" className="w-4 h-4" /> 打开输出目录
+        </Button>
+      </div>
     </div>
   );
 }

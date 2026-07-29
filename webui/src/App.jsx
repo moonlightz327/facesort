@@ -5,7 +5,7 @@ import SamplesStep from "./steps/SamplesStep.jsx";
 import ConfigStep from "./steps/ConfigStep.jsx";
 import PreviewStep from "./steps/PreviewStep.jsx";
 import RunStep from "./steps/RunStep.jsx";
-import ModelSetup from "./ModelSetup.jsx";
+import SettingsPage from "./SettingsPage.jsx";
 
 const STEPS = [
   { id: "samples", label: "人物样本", hint: "登记要识别的人", icon: "users" },
@@ -14,6 +14,8 @@ const STEPS = [
   { id: "run", label: "开始整理", hint: "执行并复核", icon: "check" },
 ];
 
+const SETTINGS = 99; // not a wizard step; reachable at any time
+
 export default function App() {
   const [dark, setDark] = useState(
     () => window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -21,6 +23,7 @@ export default function App() {
   const [boot, setBoot] = useState(null);
   const [step, setStep] = useState(0);
   const [people, setPeople] = useState([]);
+  const [settings, setSettings] = useState({});
   const [config, setConfig] = useState({
     mode: "sample", // "sample" (用样本) | "cluster" (无样本自动分组)
     inputDir: "",
@@ -37,8 +40,9 @@ export default function App() {
     clusterNames: {}, // 人物N -> 用户自定义名字（聚类模式）
   });
   const [preview, setPreview] = useState(null); // dry-run result
+  const [runResult, setRunResult] = useState(null); // completed organize result
+  const [task, setTask] = useState(null); // "preview" | "organize" while running
   const [model, setModel] = useState(null);
-  const [modelDismissed, setModelDismissed] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -49,7 +53,8 @@ export default function App() {
       setBoot(b);
       setPeople(b.people || []);
       setModel(b.model || null);
-      setConfig((c) => ({ ...c, ...camel(b.defaults) }));
+      setSettings(b.defaults || {});
+      setConfig((c) => ({ ...c, ...(b.defaults || {}) }));
     });
   }, []);
 
@@ -58,23 +63,39 @@ export default function App() {
     [people]
   );
 
-  const canGo = (target) => {
-    if (target <= step) return true;
-    if (target >= 1 && config.mode !== "cluster" && readySamples < 1) return false;
-    if (target >= 2 && !config.inputDir) return false;
-    return true;
+  // Why a step is unreachable — the rail shows this as a tooltip instead of
+  // just looking broken.
+  const blockedReason = (target) => {
+    if (task) return "任务进行中，请先完成或取消";
+    if (target >= 1 && config.mode !== "cluster" && readySamples < 1)
+      return "至少需要一个人有样本照片";
+    if (target >= 2 && !config.inputDir) return "请先选择照片目录";
+    if (target === 3 && !preview && !runResult) return "请先预览分图结果";
+    return null;
   };
 
+  const canGo = (target) => blockedReason(target) === null;
+
   const goto = (target) => {
-    if (canGo(target)) {
-      // Leaving config invalidates a stale preview — and any cluster names that
-      // went with it, since re-analysis may produce different groups.
-      if (target === 2 && step !== 2) {
-        setPreview(null);
-        setConfig((c) => ({ ...c, clusterNames: {} }));
-      }
-      setStep(target);
+    if (!canGo(target)) return;
+    // Re-entering preview from another step means the inputs may have changed,
+    // so drop the stale plan (and the names that went with it) plus any
+    // finished run — otherwise the wizard would show results that no longer
+    // match the settings above them.
+    if (target === 2 && step !== 2) {
+      setPreview(null);
+      setRunResult(null);
+      setConfig((c) => ({ ...c, clusterNames: {} }));
     }
+    setStep(target);
+  };
+
+  /** Start a fresh batch after a finished run. */
+  const startOver = () => {
+    setPreview(null);
+    setRunResult(null);
+    setConfig((c) => ({ ...c, clusterNames: {} }));
+    setStep(0);
   };
 
   if (!boot) {
@@ -85,7 +106,10 @@ export default function App() {
     );
   }
 
-  const stepProps = { boot, people, setPeople, config, setConfig, preview, setPreview, goto };
+  const stepProps = {
+    boot, people, setPeople, config, setConfig, preview, setPreview,
+    runResult, setRunResult, goto, task, setTask, model, setModel, startOver,
+  };
 
   return (
     <div className="flex h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
@@ -104,18 +128,20 @@ export default function App() {
         <nav className="flex-1 space-y-1">
           {STEPS.map((s, i) => {
             const active = i === step;
-            const done = i < step;
-            const enabled = canGo(i);
+            const done = step !== SETTINGS && i < step;
+            const reason = blockedReason(i);
+            const running = !!task && active;
             return (
               <button
                 key={s.id}
                 onClick={() => goto(i)}
-                disabled={!enabled}
+                disabled={!!reason}
+                title={reason || ""}
                 className={cx(
                   "group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition",
                   active
                     ? "bg-indigo-50 dark:bg-indigo-950/50"
-                    : enabled
+                    : !reason
                     ? "hover:bg-slate-100 dark:hover:bg-slate-800"
                     : "opacity-40 cursor-not-allowed"
                 )}
@@ -130,7 +156,13 @@ export default function App() {
                       : "bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
                   )}
                 >
-                  {done ? <Icon name="check" className="w-4 h-4" /> : i + 1}
+                  {running ? (
+                    <Spinner className="w-4 h-4" />
+                  ) : done ? (
+                    <Icon name="check" className="w-4 h-4" />
+                  ) : (
+                    i + 1
+                  )}
                 </span>
                 <span className="min-w-0">
                   <span
@@ -141,16 +173,54 @@ export default function App() {
                   >
                     {s.label}
                   </span>
-                  <span className="block truncate text-xs text-slate-400">{s.hint}</span>
+                  <span className="block truncate text-xs text-slate-400">
+                    {running ? "进行中…" : s.hint}
+                  </span>
                 </span>
               </button>
             );
           })}
         </nav>
 
+        {task && (
+          <div className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+            任务进行中，步骤已锁定。可在右侧点「取消」中断。
+          </div>
+        )}
+
+        <button
+          onClick={() => setStep(SETTINGS)}
+          className={cx(
+            "flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition",
+            step === SETTINGS
+              ? "bg-indigo-50 dark:bg-indigo-950/50"
+              : "hover:bg-slate-100 dark:hover:bg-slate-800"
+          )}
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+            <Icon name="sliders" className="w-4 h-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span
+              className={cx(
+                "block text-sm font-medium leading-tight",
+                step === SETTINGS ? "text-indigo-700 dark:text-indigo-300" : ""
+              )}
+            >
+              设置
+            </span>
+            <span className="block truncate text-xs text-slate-400">
+              {model && !model.installed ? "模型未安装" : "模型与默认值"}
+            </span>
+          </span>
+          {model && !model.installed && (
+            <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+          )}
+        </button>
+
         <button
           onClick={() => setDark((d) => !d)}
-          className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+          className="mt-2 flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
         >
           {dark ? "☀️ 浅色" : "🌙 深色"}
         </button>
@@ -159,39 +229,41 @@ export default function App() {
       {/* Main */}
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl px-8 py-8">
-          {/* Offer the model install up front rather than letting the first
-              analysis fail with a network error. */}
-          {model && !model.installed && !modelDismissed && (
-            <div className="mb-6">
-              <ModelSetup
-                model={model}
-                compact
-                onReady={(m) => {
-                  setModel(m);
-                  setModelDismissed(true);
-                }}
-              />
-            </div>
+          {/* Nudge the model install before it blocks a sort mid-flow. */}
+          {model && !model.installed && step !== SETTINGS && !task && (
+            <button
+              onClick={() => setStep(SETTINGS)}
+              className="mb-6 flex w-full items-center gap-2 rounded-xl bg-amber-50 px-4 py-3 text-left text-sm text-amber-700 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/60"
+            >
+              <Icon name="warning" className="w-4 h-4 shrink-0" />
+              <span className="flex-1">
+                人脸识别模型还没安装（约 {model.sizeMB || 289}MB）。建议先到「设置」装好，避免整理时才开始等下载。
+              </span>
+              <Icon name="arrowRight" className="w-4 h-4 shrink-0" />
+            </button>
           )}
-          {step === 0 && <SamplesStep key="s" {...stepProps} />}
-          {step === 1 && <ConfigStep key="c" {...stepProps} />}
-          {step === 2 && <PreviewStep key="p" {...stepProps} />}
-          {step === 3 && <RunStep key="r" {...stepProps} />}
+
+          {step === SETTINGS ? (
+            <SettingsPage
+              boot={boot}
+              model={model}
+              setModel={setModel}
+              settings={settings}
+              setSettings={(s) => {
+                setSettings(s);
+                setConfig((c) => ({ ...c, ...s }));
+              }}
+            />
+          ) : (
+            <>
+              {step === 0 && <SamplesStep key="s" {...stepProps} />}
+              {step === 1 && <ConfigStep key="c" {...stepProps} />}
+              {step === 2 && <PreviewStep key="p" {...stepProps} />}
+              {step === 3 && <RunStep key="r" {...stepProps} />}
+            </>
+          )}
         </div>
       </main>
     </div>
   );
-}
-
-function camel(defaults = {}) {
-  return {
-    threshold: defaults.threshold,
-    multiPerson: defaults.multiPerson,
-    folderTemplate: defaults.folderTemplate,
-    fileTemplate: defaults.fileTemplate,
-    minFace: defaults.minFace,
-    move: defaults.move,
-    workers: defaults.workers ?? 0,
-    decodeMaxSide: defaults.decodeMaxSide ?? 1400,
-  };
 }

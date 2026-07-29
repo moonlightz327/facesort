@@ -181,3 +181,104 @@ def test_download_reports_progress(home, tmp_path, monkeypatch):
 
     assert any(e.get("phase") == "download" for e in events)
     assert events[-1]["phase"] in ("download", "extract")
+
+
+# ---- progress detail & cancellation -----------------------------------
+#
+# The download used to run deep inside analyze() with neither a progress
+# callback nor a cancel token wired up, so the UI sat on a blank "preparing"
+# state for a 289MB transfer that no button could stop.
+
+
+class _SlowResponse(io.RawIOBase):
+    """Streams forever in small chunks so cancellation can be observed."""
+
+    headers = {"Content-Length": str(modelzoo.ZIP_SIZE)}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n=-1):
+        import time
+        time.sleep(0.01)
+        return b"\0" * (1 << 18)
+
+
+def test_download_progress_reports_percent_speed_and_eta(home, tmp_path, monkeypatch):
+    payload = _make_zip(tmp_path / "src.zip").read_bytes()
+
+    class Resp(io.BytesIO):
+        headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n=-1):  # force several chunks so progress is emitted
+            return super().read(min(n, 4096) if n and n > 0 else n)
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: Resp(payload))
+    events = []
+    modelzoo.download(on_progress=events.append)
+
+    downloads = [e for e in events if e.get("phase") == "download"]
+    assert downloads, "no download progress emitted"
+    last = downloads[-1]
+    for key in ("percent", "done", "total", "bytesPerSec", "etaSeconds"):
+        assert key in last, key
+    assert last["percent"] == pytest.approx(100.0, abs=0.01)
+    assert 0 <= downloads[0]["percent"] <= 100
+    # The mirror being used is named, and which attempt it is.
+    assert last["source"] and last["attempt"] == 1 and last["attempts"] >= 1
+    assert events[0]["phase"] == "connect"
+
+
+def test_download_is_cancellable_mid_transfer(home, monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, timeout=None: _SlowResponse())
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+
+    t0 = time.monotonic()
+    with pytest.raises(modelzoo.ModelCancelled):
+        modelzoo.download(cancel=cancel)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 5, f"cancel was not honored promptly ({elapsed:.1f}s)"
+    assert not modelzoo.is_installed()
+
+
+def test_cancel_before_start_short_circuits(home, monkeypatch):
+    import threading
+
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda req, timeout=None: pytest.fail("should not connect"))
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(modelzoo.ModelCancelled):
+        modelzoo.download(cancel=cancel)
+
+
+def test_ensure_model_forwards_cancel(home, monkeypatch):
+    """The engine passes its cancel token down; make sure it is not dropped."""
+    import threading
+
+    seen = {}
+
+    def fake_download(source_id=None, on_progress=None, cancel=None):
+        seen["cancel"] = cancel
+        raise modelzoo.ModelCancelled("已取消下载")
+
+    monkeypatch.setattr(modelzoo, "download", fake_download)
+    token = threading.Event()
+    with pytest.raises(modelzoo.ModelCancelled):
+        modelzoo.ensure_model(cancel=token)
+    assert seen["cancel"] is token

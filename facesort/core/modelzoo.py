@@ -121,7 +121,8 @@ def status() -> dict:
 def _install_from_dir(src: Path, on_progress: Optional[ProgressFn] = None) -> Path:
     dst = model_dir()
     if on_progress:
-        on_progress({"phase": "copy", "detail": "正在从应用内置副本安装模型…"})
+        on_progress({"phase": "copy", "percent": 50.0,
+                     "detail": "正在从应用内置副本安装模型…"})
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(dir=str(dst.parent), prefix=".buffalo_l-"))
     try:
@@ -161,7 +162,8 @@ def install_from_zip(zip_path: Path, on_progress: Optional[ProgressFn] = None) -
     dst = model_dir()
     dst.parent.mkdir(parents=True, exist_ok=True)
     if on_progress:
-        on_progress({"phase": "extract", "detail": "正在解压模型…"})
+        on_progress({"phase": "extract", "percent": 100.0,
+                     "detail": "正在解压模型（约 289MB，请稍候）…"})
     tmp = Path(tempfile.mkdtemp(dir=str(dst.parent), prefix=".buffalo_l-"))
     try:
         try:
@@ -204,10 +206,13 @@ def download(source_id: Optional[str] = None,
              cancel: Optional[threading.Event] = None) -> Path:
     """Fetch the model zip, trying each mirror until one works.
 
-    `on_progress` receives {phase, source, done, total, detail}. Raises
-    ModelError listing every source that failed."""
+    `on_progress` receives {phase, source, attempt, attempts, done, total,
+    percent, bytesPerSec, etaSeconds, detail}; phase is connect/download/
+    extract/done. Raises ModelError listing every source that failed."""
     import urllib.error
     import urllib.request
+
+    import time
 
     picked = sources()
     if source_id:
@@ -216,15 +221,17 @@ def download(source_id: Optional[str] = None,
     dst = model_dir()
     dst.parent.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
+    attempts = len(picked)
 
-    for src in picked:
+    for index, src in enumerate(picked, start=1):
         if cancel is not None and cancel.is_set():
             raise ModelCancelled("已取消下载")
         tmp_zip = dst.parent / f".{MODEL_NAME}.part"
+        base = {"source": src["label"], "attempt": index, "attempts": attempts}
         try:
             if on_progress:
-                on_progress({"phase": "download", "source": src["label"],
-                             "done": 0, "total": ZIP_SIZE,
+                on_progress({**base, "phase": "connect", "done": 0,
+                             "total": ZIP_SIZE, "percent": 0.0,
                              "detail": f"正在连接 {src['label']}…"})
             req = urllib.request.Request(
                 src["url"], headers={"User-Agent": "FaceSort/1.0"})
@@ -233,18 +240,31 @@ def download(source_id: Optional[str] = None,
             with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT) as resp:
                 total = int(resp.headers.get("Content-Length") or 0) or ZIP_SIZE
                 done = 0
+                started = time.monotonic()
+                last_emit = 0.0
                 with open(tmp_zip, "wb") as fh:
                     while True:
                         if cancel is not None and cancel.is_set():
                             raise ModelCancelled("已取消下载")
-                        chunk = resp.read(1 << 20)
+                        chunk = resp.read(1 << 18)
                         if not chunk:
                             break
                         fh.write(chunk)
                         done += len(chunk)
-                        if on_progress:
-                            on_progress({"phase": "download", "source": src["label"],
-                                         "done": done, "total": total})
+                        now = time.monotonic()
+                        # Throttle to ~5 updates/sec; every one crosses into JS.
+                        if on_progress and (now - last_emit > 0.2 or done >= total):
+                            last_emit = now
+                            elapsed = max(now - started, 1e-6)
+                            speed = done / elapsed
+                            remaining = max(total - done, 0)
+                            on_progress({
+                                **base, "phase": "download",
+                                "done": done, "total": total,
+                                "percent": (done / total * 100.0) if total else 0.0,
+                                "bytesPerSec": speed,
+                                "etaSeconds": (remaining / speed) if speed > 0 else None,
+                            })
             if done == 0:
                 raise ModelError("下载内容为空")
             # install_from_zip is the real validation: a proxy that answers with

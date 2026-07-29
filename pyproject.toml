@@ -1,6 +1,6 @@
 [project]
 name = "facesort"
-version = "1.0.2"
+version = "1.0.3"
 description = "FaceSort - organize photos into per-person folders using face recognition against sample photos"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

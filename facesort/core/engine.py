@@ -26,7 +26,8 @@ class FaceEngine:
         self._app = None
         self._load_lock = threading.Lock()
 
-    def _ensure_loaded(self, on_model_progress: Optional[Callable[[dict], None]] = None):
+    def _ensure_loaded(self, on_model_progress: Optional[Callable[[dict], None]] = None,
+                       cancel: Optional[threading.Event] = None):
         if self._app is not None:
             return self._app
         with self._load_lock:
@@ -37,7 +38,13 @@ class FaceEngine:
             # user on an unreachable network.
             from .modelzoo import ensure_model
 
-            ensure_model(on_progress=on_model_progress)
+            ensure_model(on_progress=on_model_progress, cancel=cancel)
+
+            # Building the onnx sessions takes a couple of seconds; say so
+            # instead of leaving the UI on a blank "preparing" state.
+            if on_model_progress:
+                on_model_progress({"phase": "load", "percent": 100.0,
+                                   "detail": "正在加载识别模型…"})
 
             # Imported here so that importing facesort never requires insightface
             # (matcher/organizer/templates/cache stay engine-free).

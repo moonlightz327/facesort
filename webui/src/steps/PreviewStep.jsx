@@ -3,6 +3,7 @@ import { api, onEvent } from "../api.js";
 import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
 import ModelSetup from "../ModelSetup.jsx";
+import ModelProgress from "../ModelProgress.jsx";
 
 const KIND_STYLE = {
   person: { tone: "indigo", icon: "users" },
@@ -11,10 +12,13 @@ const KIND_STYLE = {
   no_face: { tone: "slate", icon: "image" },
 };
 
-export default function PreviewStep({ config, setConfig, preview, setPreview, goto }) {
+export default function PreviewStep({ config, setConfig, preview, setPreview, goto,
+                                     setTask, model, setModel }) {
   const [progress, setProgress] = useState({ stage: "prepare", done: 0, total: 0, current: null });
+  const [modelProgress, setModelProgress] = useState(null);
   const [running, setRunning] = useState(!preview);
   const [error, setError] = useState(null);
+  const [cancelled, setCancelled] = useState(false);
   const [modelIssue, setModelIssue] = useState(null); // model status when missing
   const [openGroup, setOpenGroup] = useState(null);
   const started = useRef(false);
@@ -22,6 +26,9 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
   useEffect(() => {
     const off = onEvent((e) => {
       if (e.event === "progress") setProgress(e);
+      // The model may still be downloading; show that instead of a blank
+      // "preparing" state the user cannot interpret.
+      if (e.event === "model") setModelProgress(e.phase === "done" ? null : e);
     });
     return off;
   }, []);
@@ -29,19 +36,28 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
   const run = React.useCallback(() => {
     setRunning(true);
     setError(null);
+    setCancelled(false);
     setModelIssue(null);
+    setTask?.("preview");
     api
       .preview(config)
       .then((r) => {
-        if (r.ok) setPreview(r);
-        else {
+        if (r.ok) {
+          setPreview(r);
+        } else if (r.cancelled) {
+          setCancelled(true);
+        } else {
           setError(r.error);
           if (r.modelMissing) setModelIssue(r.model);
         }
       })
       .catch((e) => setError(String(e)))
-      .finally(() => setRunning(false));
-  }, [config, setPreview]);
+      .finally(() => {
+        setRunning(false);
+        setModelProgress(null);
+        setTask?.(null);
+      });
+  }, [config, setPreview, setTask]);
 
   useEffect(() => {
     if (preview || started.current) return;
@@ -65,20 +81,51 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
       <div>
         <StepHeader title="预览分图" desc="正在分析照片，先算好会怎么分，之后你确认了才真正动文件。" />
         <Card className="p-8">
-          <div className="mb-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
-            <Spinner className="w-5 h-5 text-indigo-600" />
-            {stageLabel}
-          </div>
-          <ProgressBar value={progress.stage === "analyze" ? pct : progress.stage === "prepare" ? 0 : 5} />
-          {progress.current && progress.stage === "analyze" && (
-            <div className="mt-3 truncate font-mono text-xs text-slate-400">{progress.current}</div>
+          {modelProgress ? (
+            <ModelProgress progress={modelProgress} />
+          ) : (
+            <>
+              <div className="mb-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
+                <Spinner className="w-5 h-5 text-indigo-600" />
+                {stageLabel}
+              </div>
+              <ProgressBar
+                value={progress.stage === "analyze" ? pct : progress.stage === "prepare" ? 0 : 5}
+              />
+              {progress.current && progress.stage === "analyze" && (
+                <div className="mt-3 truncate font-mono text-xs text-slate-400">
+                  {progress.current}
+                </div>
+              )}
+            </>
           )}
           <div className="mt-6">
             <Button variant="outline" onClick={cancel}>
-              <Icon name="x" className="w-4 h-4" /> 取消
+              <Icon name="x" className="w-4 h-4" />
+              {modelProgress ? "取消下载" : "取消"}
             </Button>
           </div>
         </Card>
+      </div>
+    );
+  }
+
+  if (cancelled) {
+    return (
+      <div>
+        <StepHeader title="预览分图" desc="已取消，没有任何文件被改动。" />
+        <Card className="p-6">
+          <div className="flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
+            <Icon name="x" className="w-5 h-5 shrink-0 text-slate-400" />
+            预览已取消。可以重新预览，或返回上一步调整设置。
+          </div>
+          <div className="mt-4">
+            <Button onClick={run}>
+              <Icon name="refresh" className="w-4 h-4" /> 重新预览
+            </Button>
+          </div>
+        </Card>
+        <StepNav onBack={() => goto(1)} />
       </div>
     );
   }
@@ -92,8 +139,9 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
           <StepHeader title="预览分图" desc="识别模型还没准备好，装好后即可继续。" />
           <ModelSetup
             model={modelIssue}
-            onReady={() => {
+            onReady={(m) => {
               setModelIssue(null);
+              setModel?.(m);
               run();
             }}
           />

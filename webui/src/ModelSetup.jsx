@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { api, onEvent } from "./api.js";
-import { Button, Card, Icon, Spinner, ProgressBar, cx } from "./ui.jsx";
+import { Button, Card, Icon, Badge } from "./ui.jsx";
+import ModelProgress from "./ModelProgress.jsx";
 
 /**
- * Recovery UI for a missing recognition model.
+ * Install / manage the recognition model.
  *
  * The model is a ~289MB zip that insightface normally pulls straight from
- * github.com — unreachable on a lot of networks, which surfaced as a raw
+ * github.com — unreachable on a lot of networks, which used to surface as a raw
  * ConnectTimeout. Here the user gets: retry across mirrors, pick a specific
- * mirror, or install a zip they downloaded themselves.
+ * mirror, or install a zip they downloaded themselves — and can do all of it
+ * ahead of time from 设置 rather than discovering it mid-sort.
  */
-export default function ModelSetup({ model, onReady, compact = false }) {
+export default function ModelSetup({ model, onReady, compact = false, manage = false }) {
   const [progress, setProgress] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -25,16 +27,17 @@ export default function ModelSetup({ model, onReady, compact = false }) {
   }, []);
 
   const sources = model?.sources || [];
+  const installed = !!model?.installed;
 
   const download = async () => {
     setBusy(true);
     setError(null);
-    setProgress({ phase: "download", done: 0, total: 0, detail: "正在连接…" });
+    setProgress({ phase: "connect", done: 0, total: 0, detail: "正在连接…" });
     const r = await api.downloadModel(source || null);
     setBusy(false);
     setProgress(null);
     if (r.ok) onReady?.(r.model);
-    else setError(r.error);
+    else if (!r.cancelled) setError(r.error);
   };
 
   const importZip = async () => {
@@ -49,43 +52,51 @@ export default function ModelSetup({ model, onReady, compact = false }) {
     else setError(r.error);
   };
 
-  const pct = progress?.total ? (progress.done / progress.total) * 100 : 0;
-  const mb = (n) => `${(n / 1e6).toFixed(0)}MB`;
-
   return (
     <Card className={compact ? "p-4" : "p-6"}>
       <div className="mb-1 flex items-center gap-2">
-        <Icon name="warning" className="w-4 h-4 text-amber-500" />
-        <h2 className="text-sm font-semibold">需要先安装人脸识别模型</h2>
+        {installed ? (
+          <>
+            <Icon name="check" className="w-4 h-4 text-emerald-500" />
+            <h2 className="text-sm font-semibold">人脸识别模型</h2>
+            <Badge tone="green">已安装</Badge>
+          </>
+        ) : (
+          <>
+            <Icon name="warning" className="w-4 h-4 text-amber-500" />
+            <h2 className="text-sm font-semibold">需要先安装人脸识别模型</h2>
+            <Badge tone="amber">未安装</Badge>
+          </>
+        )}
       </div>
+
       <p className="mb-4 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-        首次使用需要下载识别模型（约 {model?.sizeMB || 289}MB，只需一次）。
-        默认下载源在国内常常连不上，下面已内置多个加速镜像；如果全部失败，可以自己下载
-        <span className="mx-1 font-mono">buffalo_l.zip</span>后手动导入。
+        {installed ? (
+          <>模型已就绪，整理照片时无需联网。如果怀疑文件损坏，可以重新下载或重新导入。</>
+        ) : (
+          <>
+            识别功能需要一个约 {model?.sizeMB || 289}MB 的模型（只需装一次）。
+            默认下载源在国内常常连不上，已内置多个加速镜像会自动逐个尝试；万一都失败，
+            可以自己下载
+            <span className="mx-1 font-mono">buffalo_l.zip</span>后手动导入。{" "}
+            <b className="text-slate-600 dark:text-slate-300">
+              建议现在就装好，免得整理照片时才开始等下载。
+            </b>
+          </>
+        )}
       </p>
 
       {busy && progress ? (
-        <div className="mb-4">
-          <div className="mb-2 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-            <Spinner className="w-4 h-4 text-indigo-600" />
-            {progress.phase === "download"
-              ? progress.total
-                ? `正在从${progress.source || "镜像"}下载 ${mb(progress.done)} / ${mb(progress.total)}`
-                : progress.detail || "正在连接…"
-              : progress.detail || "正在安装…"}
-          </div>
-          <ProgressBar value={progress.phase === "download" ? pct : 100} />
-          <button
-            onClick={() => api.cancelModelDownload()}
-            className="mt-3 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-          >
-            取消下载
-          </button>
-        </div>
+        <ModelProgress
+          progress={progress}
+          onCancel={() => api.cancelModelDownload()}
+          className="mb-4"
+        />
       ) : (
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <Button onClick={download} disabled={busy}>
-            <Icon name="check" className="w-4 h-4" /> 自动下载模型
+          <Button onClick={download} disabled={busy} variant={installed ? "outline" : "primary"}>
+            <Icon name={installed ? "refresh" : "check"} className="w-4 h-4" />
+            {installed ? "重新下载" : "自动下载模型"}
           </Button>
           <Button variant="outline" onClick={importZip} disabled={busy}>
             <Icon name="folder" className="w-4 h-4" /> 手动导入 zip
@@ -113,21 +124,20 @@ export default function ModelSetup({ model, onReady, compact = false }) {
         </div>
       )}
 
-      <details className="text-xs text-slate-400">
-        <summary className="cursor-pointer select-none hover:text-slate-600 dark:hover:text-slate-200">
-          手动导入怎么做？
-        </summary>
-        <div className="mt-2 space-y-1 leading-relaxed">
-          <p>
-            1. 在能上网的机器上下载 buffalo_l.zip（约 289MB），例如从 GitHub 的
-            insightface v0.7 发布页。
-          </p>
-          <p>2. 把 zip 拷到本机，点上面的「手动导入 zip」选中它即可。</p>
-          <p className="text-slate-400">
-            模型会安装到 <span className="font-mono">{model?.modelDir}</span>
-          </p>
-        </div>
-      </details>
+      {(manage || !installed) && (
+        <details className="text-xs text-slate-400">
+          <summary className="cursor-pointer select-none hover:text-slate-600 dark:hover:text-slate-200">
+            手动导入怎么做？
+          </summary>
+          <div className="mt-2 space-y-1 leading-relaxed">
+            <p>1. 在能上网的机器上下载 buffalo_l.zip（约 289MB），例如从 GitHub 的 insightface v0.7 发布页。</p>
+            <p>2. 把 zip 拷到本机，点上面的「手动导入 zip」选中它即可。</p>
+            <p className="break-all">
+              安装位置：<span className="font-mono">{model?.modelDir}</span>
+            </p>
+          </div>
+        </details>
+      )}
     </Card>
   );
 }

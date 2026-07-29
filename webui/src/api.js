@@ -74,6 +74,12 @@ export const api = {
     call("rename_group", outputDir, oldName, newName),
   openPath: (path) => call("open_path", path),
 
+  // Persisted settings (survive restarts; let users pre-configure the app).
+  getSettings: () => call("get_settings"),
+  saveSettings: (values) => call("save_settings", values),
+  resetSettings: () => call("reset_settings"),
+  isBusy: () => call("is_busy"),
+
   // Recognition model provisioning (first run / blocked network).
   modelStatus: () => call("model_status"),
   downloadModel: (sourceId) => call("download_model", sourceId ?? null),

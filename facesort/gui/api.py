@@ -14,6 +14,7 @@ from typing import Any, Optional
 from ..core.models import Config, ConfigError, SubjectWeights
 from ..core.templates import TemplateError, render, validate_template
 from . import thumbs
+from . import settings as app_settings
 from .library import PeopleLibrary, app_support_dir
 
 STRATEGIES = ["primary", "all", "group"]
@@ -67,16 +68,9 @@ class Api:
             "strategies": STRATEGIES,
             "folderPresets": FOLDER_PRESETS,
             "people": self._people_payload(),
-            "defaults": {
-                "threshold": 0.40,
-                "multiPerson": "primary",
-                "folderTemplate": "{person}",
-                "fileTemplate": "{orig_name}{ext}",
-                "minFace": 40,
-                "move": False,
-                "workers": 0,
-                "decodeMaxSide": 1400,
-            },
+            # Persisted user settings, so a configured machine starts ready
+            # instead of resetting to defaults every launch.
+            "defaults": app_settings.load(),
             "libraryPath": str(self.library.root),
             "model": model_status(),
             "autoWorkers": default_workers(),
@@ -86,10 +80,34 @@ class Api:
         """Load the recognition model. The UI calls this before the first
         analysis so it can show a one-time loading state."""
         try:
-            self._engine_get()._ensure_loaded()
+            self._ensure_model_ready()
         except Exception as e:
             return {"ready": False, **self._model_error(e)}
         return {"ready": True}
+
+    def _ensure_model_ready(self):
+        """Download (if needed) and load the model *before* a run starts.
+
+        Doing it here rather than lazily inside the pipeline is what makes the
+        first run observable and interruptible: progress events reach the page,
+        and the cancel button's token is honored. Previously the download
+        happened deep inside `analyze()` with neither wired up, so the UI sat on
+        "准备中…" for a 289MB transfer that no button could stop."""
+        return self._engine_get()._ensure_loaded(
+            on_model_progress=lambda ev: self._push("model", ev),
+            cancel=self._model_cancel,
+        )
+
+    # ---- settings --------------------------------------------------------
+    def get_settings(self) -> dict[str, Any]:
+        return {"ok": True, "settings": app_settings.load(),
+                "path": str(app_settings.settings_path())}
+
+    def save_settings(self, values: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "settings": app_settings.save(values or {})}
+
+    def reset_settings(self) -> dict[str, Any]:
+        return {"ok": True, "settings": app_settings.reset()}
 
     # ---- recognition model ----------------------------------------------
     def model_status(self) -> dict[str, Any]:
@@ -101,8 +119,10 @@ class Api:
 
         A missing model is recoverable (offer download / manual import), so it
         is flagged separately from a genuine crash."""
-        from ..core.modelzoo import ModelError, is_installed
+        from ..core.modelzoo import ModelCancelled, ModelError, is_installed
 
+        if isinstance(exc, ModelCancelled):
+            return {"ok": False, "cancelled": True, "error": "已取消"}
         if isinstance(exc, ModelError) or not is_installed():
             return {"ok": False, "error": str(exc), "modelMissing": True,
                     "model": self.model_status()}
@@ -295,11 +315,19 @@ class Api:
             return {"ok": False, "error": "已有任务在进行中"}
         try:
             self._cancel.clear()
+            self._model_cancel.clear()
             config = self._build_config(cfg, dry_run=True)
+            self._ensure_model_ready()
+            if self._cancel.is_set():
+                return {"ok": False, "cancelled": True, "error": "已取消"}
             result = self._run(config, cfg)
+            if result.cancelled:
+                # A partial plan rendered as a normal preview looked like a
+                # finished result; make the interruption explicit instead.
+                return {"ok": False, "cancelled": True, "error": "已取消预览"}
             grouped = self._group_plan(result, config)
             grouped["ok"] = True
-            grouped["cancelled"] = result.cancelled
+            grouped["cancelled"] = False
             grouped["clusters"] = result.report.get("clusters")
             return grouped
         except (ConfigError, TemplateError) as e:
@@ -314,7 +342,11 @@ class Api:
             return {"ok": False, "error": "已有任务在进行中"}
         try:
             self._cancel.clear()
+            self._model_cancel.clear()
             config = self._build_config(cfg, dry_run=False)
+            self._ensure_model_ready()
+            if self._cancel.is_set():
+                return {"ok": False, "cancelled": True, "error": "已取消"}
             result = self._run(config, cfg)
             return {
                 "ok": True,
@@ -331,8 +363,15 @@ class Api:
             self._busy.release()
 
     def cancel(self) -> dict[str, Any]:
+        """Stop the current task. Sets both tokens because the thing being
+        cancelled may be a model download rather than the pipeline itself —
+        the user only sees one 「取消」 button."""
         self._cancel.set()
+        self._model_cancel.set()
         return {"ok": True}
+
+    def is_busy(self) -> dict[str, Any]:
+        return {"busy": self._busy.locked()}
 
     # ---- results helpers ------------------------------------------------
     def _group_plan(self, result, config: Config) -> dict[str, Any]:
