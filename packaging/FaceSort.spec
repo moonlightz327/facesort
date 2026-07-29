@@ -27,6 +27,28 @@ _if_objects = os.path.join(os.path.dirname(insightface.__file__), "data", "objec
 if os.path.isdir(_if_objects):
     datas.append((_if_objects, "objects"))
 
+# Optionally ship the recognition model inside the bundle so the first run needs
+# no network at all (facesort.core.modelzoo.bundled_dir picks it up from
+# sys._MEIPASS/models/buffalo_l). Costs ~325MB of bundle size, so it is opt-in:
+#
+#   FACESORT_BUNDLE_MODEL=1 ./packaging/build_app.sh
+#
+# Defaults to the model already downloaded to ~/.insightface; override with
+# FACESORT_BUNDLE_MODEL=/path/to/buffalo_l.
+_bundle = os.environ.get("FACESORT_BUNDLE_MODEL", "")
+if _bundle and _bundle != "0":
+    _model = _bundle if os.path.isdir(_bundle) else os.path.join(
+        os.environ.get("INSIGHTFACE_HOME", os.path.expanduser("~/.insightface")),
+        "models", "buffalo_l")
+    if os.path.isdir(_model):
+        datas.append((_model, "models/buffalo_l"))
+        print(f"[spec] bundling recognition model from {_model}")
+    else:
+        raise SystemExit(
+            f"FACESORT_BUNDLE_MODEL is set but no model found at {_model}. "
+            "Run the app once to download it, or point the variable at a buffalo_l directory."
+        )
+
 for pkg in ("onnxruntime", "insightface", "skimage", "webview", "cv2", "rawpy", "PIL"):
     datas += collect_data_files(pkg)
     hiddenimports += collect_submodules(pkg)

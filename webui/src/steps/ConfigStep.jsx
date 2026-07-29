@@ -215,6 +215,25 @@ export default function ConfigStep({ boot, config, setConfig, goto }) {
               <span className="text-xs text-slate-400">px</span>
             </div>
           </div>
+          <div className="flex items-center justify-between text-sm">
+            <span>
+              <span className="font-medium">并行处理数</span>
+              <span className="ml-2 text-xs text-slate-400">
+                同时分析几张照片。自动即可；调太高反而会变慢
+              </span>
+            </span>
+            <select
+              value={config.workers ?? 0}
+              onChange={(e) => set({ workers: parseInt(e.target.value, 10) })}
+              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
+            >
+              <option value={0}>自动{boot?.autoWorkers ? `（${boot.autoWorkers}）` : ""}</option>
+              <option value={1}>1（最省资源）</option>
+              <option value={2}>2</option>
+              <option value={4}>4</option>
+              <option value={6}>6</option>
+            </select>
+          </div>
         </Card>
       )}
 

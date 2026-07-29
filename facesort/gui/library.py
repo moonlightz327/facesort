@@ -55,6 +55,35 @@ class PeopleLibrary:
         d.mkdir(parents=True, exist_ok=True)
         return d.name
 
+    def has_person(self, name: str) -> bool:
+        try:
+            return self._person_dir(name).is_dir()
+        except ValueError:
+            return False
+
+    def rename_person(self, old: str, new: str) -> str:
+        """Rename a saved person, merging into the target if it already exists
+        (the same face registered twice under different spellings)."""
+        src = self._person_dir(old)
+        dst = self._person_dir(new)
+        if not src.is_dir():
+            raise ValueError(f"人物「{old}」不存在")
+        if src == dst:
+            return dst.name
+        if dst.exists():
+            for f in src.iterdir():
+                if f.is_file() and is_image_file(f):
+                    target = dst / f.name
+                    n = 0
+                    while target.exists():
+                        n += 1
+                        target = dst / f"{f.stem}-{n}{f.suffix}"
+                    shutil.move(str(f), str(target))
+            shutil.rmtree(src, ignore_errors=True)
+        else:
+            src.rename(dst)
+        return dst.name
+
     def remove_person(self, name: str) -> None:
         d = self._person_dir(name)
         if d.is_dir():

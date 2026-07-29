@@ -144,6 +144,10 @@ class Config:
     group_subfolders: bool = False         # _合影/张三+李四/ subfolders
     ambiguity_margin: float = 0.05
     cache_path: Optional[Path] = None      # default: <output_dir>/.facesort_cache.sqlite
+    workers: int = 0                       # analyze concurrency; 0 = auto
+    # Cluster mode only: rename auto-detected groups before anything is written,
+    # e.g. {"人物1": "张三"}. Unlisted clusters keep their 人物N name.
+    cluster_names: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +167,8 @@ class Config:
             "group_dir": self.group_dir,
             "group_subfolders": self.group_subfolders,
             "ambiguity_margin": self.ambiguity_margin,
+            "workers": self.workers,
+            "cluster_names": dict(self.cluster_names),
         }
 
 

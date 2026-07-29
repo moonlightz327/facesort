@@ -61,6 +61,7 @@ def run(
     group_dir: str = typer.Option("_合影", "--group-dir", help="合影文件夹名（group 策略）"),
     group_subfolders: bool = typer.Option(False, "--group-subfolders", help="合影内按人名组合建子文件夹（张三+李四）"),
     cache: Optional[Path] = typer.Option(None, "--cache", help="SQLite 缓存路径，默认 <output>/.facesort_cache.sqlite"),
+    workers: int = typer.Option(0, "--workers", help="并行分析线程数，0=自动（按 CPU 核数取小值）"),
     plan_json: bool = typer.Option(False, "--plan-json", help="dry-run 时以 JSON 输出计划（默认表格）"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="打印每个执行动作"),
 ):
@@ -79,6 +80,7 @@ def run(
             move=move,
             dry_run=dry_run,
             min_face=min_face,
+            workers=workers,
             weights=SubjectWeights.parse(weights) if weights else SubjectWeights(),
             no_face_dir=no_face_dir,
             unknown_dir=unknown_dir,
@@ -125,10 +127,21 @@ def cluster(
     move: bool = typer.Option(False, "--move", help="移动而非复制（默认复制）"),
     dry_run: bool = typer.Option(False, "--dry-run", help="只打印计划，不动任何文件"),
     min_face: int = typer.Option(40, "--min-face", help="最小人脸边长（像素）"),
+    workers: int = typer.Option(0, "--workers", help="并行分析线程数，0=自动（按 CPU 核数取小值）"),
+    name: list[str] = typer.Option(None, "--name", help="给分组命名，可重复: --name 人物1=张三"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="打印每个执行动作"),
 ):
     """无样本模式：自动把长相相同的人聚成「人物1/人物2…」文件夹，之后可自行改名。"""
     from .core.pipeline import run_cluster_pipeline
+
+    cluster_names: dict[str, str] = {}
+    for pair in name or []:
+        if "=" not in pair:
+            typer.secho(f"错误: --name 需要 '人物1=张三' 形式，收到: {pair}",
+                        fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        key, value = pair.split("=", 1)
+        cluster_names[key.strip()] = value.strip()
 
     try:
         config = Config(
@@ -142,6 +155,8 @@ def cluster(
             move=move,
             dry_run=dry_run,
             min_face=min_face,
+            workers=workers,
+            cluster_names=cluster_names,
         )
         cancel = threading.Event()
         signal.signal(signal.SIGINT, lambda *_: cancel.set())

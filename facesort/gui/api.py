@@ -36,6 +36,7 @@ class Api:
         self._window = None  # set by app.py after window creation
         self._cancel = threading.Event()
         self._busy = threading.Lock()
+        self._model_cancel = threading.Event()
 
     # ---- infrastructure -------------------------------------------------
     def set_window(self, window) -> None:
@@ -59,6 +60,9 @@ class Api:
     # ---- startup --------------------------------------------------------
     def bootstrap(self) -> dict[str, Any]:
         """Initial state for the app: presets, strategies, saved people."""
+        from ..core.modelzoo import status as model_status
+        from ..core.parallel import default_workers
+
         return {
             "strategies": STRATEGIES,
             "folderPresets": FOLDER_PRESETS,
@@ -70,15 +74,87 @@ class Api:
                 "fileTemplate": "{orig_name}{ext}",
                 "minFace": 40,
                 "move": False,
+                "workers": 0,
             },
             "libraryPath": str(self.library.root),
+            "model": model_status(),
+            "autoWorkers": default_workers(),
         }
 
     def warm_up(self) -> dict[str, Any]:
-        """Load the recognition model (first call downloads ~300MB). The UI calls
-        this before the first analysis so it can show a one-time loading state."""
-        self._engine_get()._ensure_loaded()
+        """Load the recognition model. The UI calls this before the first
+        analysis so it can show a one-time loading state."""
+        try:
+            self._engine_get()._ensure_loaded()
+        except Exception as e:
+            return {"ready": False, **self._model_error(e)}
         return {"ready": True}
+
+    # ---- recognition model ----------------------------------------------
+    def model_status(self) -> dict[str, Any]:
+        from ..core.modelzoo import status
+        return status()
+
+    def _model_error(self, exc: Exception) -> dict[str, Any]:
+        """Turn any engine-load failure into something the UI can act on.
+
+        A missing model is recoverable (offer download / manual import), so it
+        is flagged separately from a genuine crash."""
+        from ..core.modelzoo import ModelError, is_installed
+
+        if isinstance(exc, ModelError) or not is_installed():
+            return {"ok": False, "error": str(exc), "modelMissing": True,
+                    "model": self.model_status()}
+        return {"ok": False, "error": str(exc)}
+
+    def download_model(self, source_id: Optional[str] = None) -> dict[str, Any]:
+        """Fetch the recognition model, streaming progress to the page. Tries
+        every mirror when no specific source is given."""
+        from ..core.modelzoo import ModelCancelled, ModelError, download
+
+        self._model_cancel.clear()
+
+        def on_progress(ev: dict) -> None:
+            self._push("model", ev)
+
+        try:
+            path = download(source_id=source_id or None, on_progress=on_progress,
+                            cancel=self._model_cancel)
+        except ModelCancelled:
+            return {"ok": False, "error": "已取消下载", "cancelled": True}
+        except ModelError as e:
+            return {"ok": False, "error": str(e), "model": self.model_status()}
+        self._push("model", {"phase": "done"})
+        return {"ok": True, "path": str(path), "model": self.model_status()}
+
+    def cancel_model_download(self) -> dict[str, Any]:
+        self._model_cancel.set()
+        return {"ok": True}
+
+    def pick_model_zip(self) -> Optional[str]:
+        if self._window is None:
+            return None
+        import webview
+        result = self._window.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=False,
+            file_types=("模型压缩包 (*.zip)",),
+        )
+        if not result:
+            return None
+        return result[0] if isinstance(result, (list, tuple)) else result
+
+    def install_model_zip(self, zip_path: str) -> dict[str, Any]:
+        """Install a buffalo_l.zip the user downloaded on their own — the escape
+        hatch when every mirror is blocked."""
+        from ..core.modelzoo import ModelError, install_from_zip
+
+        try:
+            install_from_zip(Path(zip_path),
+                             on_progress=lambda ev: self._push("model", ev))
+        except ModelError as e:
+            return {"ok": False, "error": str(e)}
+        self._push("model", {"phase": "done"})
+        return {"ok": True, "model": self.model_status()}
 
     # ---- people / samples ----------------------------------------------
     def _people_payload(self) -> list[dict[str, Any]]:
@@ -188,6 +264,9 @@ class Api:
             min_face=int(cfg.get("minFace", 40)),
             weights=SubjectWeights(**weights) if weights else SubjectWeights(),
             group_subfolders=bool(cfg.get("groupSubfolders", False)),
+            workers=int(cfg.get("workers", 0) or 0),
+            cluster_names={str(k): str(v) for k, v in
+                           (cfg.get("clusterNames") or {}).items() if str(v).strip()},
         )
 
     def _progress_cb(self):
@@ -223,6 +302,8 @@ class Api:
             return grouped
         except (ConfigError, TemplateError) as e:
             return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return self._model_error(e)
         finally:
             self._busy.release()
 
@@ -242,6 +323,8 @@ class Api:
             }
         except (ConfigError, TemplateError) as e:
             return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return self._model_error(e)
         finally:
             self._busy.release()
 
@@ -333,12 +416,88 @@ class Api:
             return {"ok": False, "error": str(e)}
         return {"ok": True, "dst": str(dst)}
 
+    # ---- naming groups & saving people ---------------------------------
+    def rename_group(self, output_dir: str, old_name: str,
+                     new_name: str) -> dict[str, Any]:
+        """Rename an output folder after the fact (人物1 -> 张三).
+
+        Merges into the target when it already exists, so naming two auto
+        groups the same thing joins them."""
+        import shutil
+        from ..core.templates import sanitize_component
+
+        safe = sanitize_component((new_name or "").strip())
+        if not safe:
+            return {"ok": False, "error": "名字不能为空"}
+        src = Path(output_dir) / old_name
+        if not src.is_dir():
+            return {"ok": False, "error": f"找不到文件夹: {src}"}
+        dst = Path(output_dir) / safe
+        if src.resolve() == dst.resolve():
+            return {"ok": True, "name": safe, "merged": False}
+        try:
+            if dst.exists():
+                for f in src.iterdir():
+                    target = dst / f.name
+                    n = 0
+                    while target.exists():
+                        n += 1
+                        target = dst / f"{f.stem}-{n}{f.suffix}"
+                    shutil.move(str(f), str(target))
+                src.rmdir()
+                return {"ok": True, "name": safe, "merged": True}
+            src.rename(dst)
+        except OSError as e:
+            return {"ok": False, "error": f"重命名失败: {e}"}
+        return {"ok": True, "name": safe, "merged": False}
+
+    def rename_person(self, old_name: str, new_name: str) -> dict[str, Any]:
+        """Rename someone in the sample library (merging if the name is taken)."""
+        try:
+            real = self.library.rename_person(old_name, new_name)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except OSError as e:
+            return {"ok": False, "error": f"重命名失败: {e}"}
+        return {"ok": True, "name": real, "people": self._people_payload()}
+
+    def _rank_sample_candidates(self, paths: list[Path], limit: int) -> list[dict[str, Any]]:
+        """Score photos for use as reference samples: a lone, large, confidently
+        detected face is what recognition works best from."""
+        engine = self._engine_get()
+        scored: list[dict[str, Any]] = []
+        for p in paths[: max(limit * 4, 8)]:
+            try:
+                analysis = engine.analyze(p)
+            except Exception:
+                continue
+            if not analysis.faces:
+                continue
+            largest = max(analysis.faces, key=lambda f: f.area)
+            scored.append({
+                "path": p,
+                "single": len(analysis.faces) == 1,
+                "area": largest.area,
+                "score": largest.det_score,
+                "bbox": largest.bbox,
+            })
+        # Single-face photos first: on a group shot we cannot be sure which face
+        # belongs to this cluster, so those are only used as a fallback (cropped).
+        scored.sort(key=lambda s: (not s["single"], -s["area"], -s["score"]))
+        return scored[:limit]
+
     def save_cluster_as_person(self, output_dir: str, cluster_name: str,
-                               new_name: str, count: int = 4) -> dict[str, Any]:
-        """Turn a 人物N cluster into a saved person: copy a few of its photos into
-        the sample library under `new_name` so later runs recognize them by name.
-        Connects the sample-free clustering flow back to the sample library."""
+                               new_name: str, count: int = 4,
+                               rename_folder: bool = True) -> dict[str, Any]:
+        """Turn a 人物N cluster into a reusable saved person.
+
+        Picks the cluster's clearest single-face photos as samples (cropping the
+        main face when only group shots are available), copies them into the
+        sample library under `new_name`, and by default renames the output
+        folder to match — so the next run in 「我有样本照片」 mode recognizes
+        this person by name."""
         from ..core.imageio import is_image_file, is_raw_file
+
         new_name = (new_name or "").strip()
         if not new_name:
             return {"ok": False, "error": "名字不能为空"}
@@ -352,11 +511,65 @@ class Api:
             imgs = [p for p in sorted(src_dir.iterdir()) if p.is_file() and is_image_file(p)]
         if not imgs:
             return {"ok": False, "error": "该分组没有可用照片"}
-        self.library.add_person(new_name)
-        result = self.add_samples(new_name, [str(p) for p in imgs[:count]])
-        added = [s for s in result.get("samples", []) if s.get("ok")]
-        return {"ok": True, "name": new_name, "saved": len(added),
+
+        try:
+            candidates = self._rank_sample_candidates(imgs, count)
+        except Exception as e:
+            return self._model_error(e)
+        if not candidates:
+            return {"ok": False, "error": "该分组的照片里没有检测到清晰人脸，无法作为样本"}
+
+        merged_into = self.library.has_person(new_name)
+        real_name = self.library.add_person(new_name)
+        saved = 0
+        for c in candidates:
+            if c["single"]:
+                added = self.library.add_samples(real_name, [str(c["path"])])
+                saved += len(added)
+            elif self._save_face_crop(real_name, c["path"], c["bbox"]):
+                saved += 1
+        if saved == 0:
+            return {"ok": False, "error": "样本保存失败，请手动添加样本照片"}
+
+        folder = None
+        if rename_folder:
+            r = self.rename_group(output_dir, cluster_name, real_name)
+            folder = r.get("name") if r.get("ok") else None
+
+        return {"ok": True, "name": real_name, "saved": saved,
+                "mergedInto": merged_into, "folder": folder,
                 "people": self._people_payload()}
+
+    def _save_face_crop(self, person: str, src: Path,
+                        bbox: tuple[float, float, float, float]) -> bool:
+        """Write a padded crop of one face into the person's sample folder.
+
+        Used when only group shots are available: copying the whole photo would
+        let the library pick up whichever face happens to be biggest."""
+        from PIL import Image
+
+        from ..core.imageio import load_image_bgr
+        try:
+            # Go through load_image_bgr so HEIC/RAW and EXIF rotation are handled
+            # the same way they were during detection — the bbox must still line up.
+            arr = load_image_bgr(src)
+            im = Image.fromarray(arr[:, :, ::-1])
+            x1, y1, x2, y2 = bbox
+            w, h = x2 - x1, y2 - y1
+            box = (max(0, int(x1 - w * 0.5)), max(0, int(y1 - h * 0.6)),
+                   min(im.width, int(x2 + w * 0.5)), min(im.height, int(y2 + h * 0.6)))
+            crop = im.crop(box)
+            dst_dir = self.library.root / person
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst = dst_dir / f"{src.stem}-face.jpg"
+            n = 0
+            while dst.exists():
+                n += 1
+                dst = dst_dir / f"{src.stem}-face-{n}.jpg"
+            crop.convert("RGB").save(dst, format="JPEG", quality=92)
+        except Exception:
+            return False
+        return True
 
     def open_path(self, path: str) -> dict[str, Any]:
         import sys

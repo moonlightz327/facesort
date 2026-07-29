@@ -5,6 +5,7 @@ import SamplesStep from "./steps/SamplesStep.jsx";
 import ConfigStep from "./steps/ConfigStep.jsx";
 import PreviewStep from "./steps/PreviewStep.jsx";
 import RunStep from "./steps/RunStep.jsx";
+import ModelSetup from "./ModelSetup.jsx";
 
 const STEPS = [
   { id: "samples", label: "人物样本", hint: "登记要识别的人", icon: "users" },
@@ -31,8 +32,12 @@ export default function App() {
     minFace: 40,
     move: false,
     groupSubfolders: false,
+    workers: 0, // 0 = auto-size the analyze thread pool
+    clusterNames: {}, // 人物N -> 用户自定义名字（聚类模式）
   });
   const [preview, setPreview] = useState(null); // dry-run result
+  const [model, setModel] = useState(null);
+  const [modelDismissed, setModelDismissed] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -42,6 +47,7 @@ export default function App() {
     api.bootstrap().then((b) => {
       setBoot(b);
       setPeople(b.people || []);
+      setModel(b.model || null);
       setConfig((c) => ({ ...c, ...camel(b.defaults) }));
     });
   }, []);
@@ -60,8 +66,12 @@ export default function App() {
 
   const goto = (target) => {
     if (canGo(target)) {
-      // Leaving config invalidates a stale preview.
-      if (target === 2 && step !== 2) setPreview(null);
+      // Leaving config invalidates a stale preview — and any cluster names that
+      // went with it, since re-analysis may produce different groups.
+      if (target === 2 && step !== 2) {
+        setPreview(null);
+        setConfig((c) => ({ ...c, clusterNames: {} }));
+      }
       setStep(target);
     }
   };
@@ -148,6 +158,20 @@ export default function App() {
       {/* Main */}
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl px-8 py-8">
+          {/* Offer the model install up front rather than letting the first
+              analysis fail with a network error. */}
+          {model && !model.installed && !modelDismissed && (
+            <div className="mb-6">
+              <ModelSetup
+                model={model}
+                compact
+                onReady={(m) => {
+                  setModel(m);
+                  setModelDismissed(true);
+                }}
+              />
+            </div>
+          )}
           {step === 0 && <SamplesStep key="s" {...stepProps} />}
           {step === 1 && <ConfigStep key="c" {...stepProps} />}
           {step === 2 && <PreviewStep key="p" {...stepProps} />}
@@ -166,5 +190,6 @@ function camel(defaults = {}) {
     fileTemplate: defaults.fileTemplate,
     minFace: defaults.minFace,
     move: defaults.move,
+    workers: defaults.workers ?? 0,
   };
 }

@@ -1,8 +1,14 @@
-"""SQLite embedding cache. Key = (absolute path, mtime_ns, size)."""
+"""SQLite embedding cache. Key = (absolute path, mtime_ns, size).
+
+Safe to share across the analyze stage's worker threads: the connection is
+opened with check_same_thread=False and every statement runs under a lock, so
+the pipeline can look up and store embeddings from whichever thread analyzed
+the photo. Hold time is microseconds, well under the cost of an inference."""
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -36,7 +42,8 @@ class EmbeddingCache:
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
-        self._conn = sqlite3.connect(str(db_path))
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
         self.hits = 0
@@ -54,27 +61,30 @@ class EmbeddingCache:
             key, mtime_ns, size = self._key(path)
         except OSError:
             return None
-        row = self._conn.execute(
-            "SELECT id, width, height FROM photos WHERE path=? AND mtime_ns=? AND size=?",
-            (key, mtime_ns, size),
-        ).fetchone()
-        if row is None:
-            self.misses += 1
-            return None
-        photo_id, width, height = row
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, width, height FROM photos WHERE path=? AND mtime_ns=? AND size=?",
+                (key, mtime_ns, size),
+            ).fetchone()
+            if row is None:
+                self.misses += 1
+                return None
+            photo_id, width, height = row
+            rows = self._conn.execute(
+                "SELECT x1, y1, x2, y2, det_score, embedding FROM faces"
+                " WHERE photo_id=? ORDER BY idx",
+                (photo_id,),
+            ).fetchall()
+            self.hits += 1
         faces = []
-        for x1, y1, x2, y2, det_score, blob in self._conn.execute(
-            "SELECT x1, y1, x2, y2, det_score, embedding FROM faces WHERE photo_id=? ORDER BY idx",
-            (photo_id,),
-        ):
+        for x1, y1, x2, y2, det_score, blob in rows:
             emb = np.frombuffer(blob, dtype=np.float32).copy()
             faces.append(Face(bbox=(x1, y1, x2, y2), embedding=emb, det_score=det_score))
-        self.hits += 1
         return PhotoAnalysis(path=Path(path), width=width, height=height, faces=faces)
 
     def put(self, path: Path, analysis: PhotoAnalysis) -> None:
         key, mtime_ns, size = self._key(path)
-        with self._conn:
+        with self._lock, self._conn:
             # Drop stale rows for the same path (older mtime/size).
             self._conn.execute("DELETE FROM photos WHERE path=?", (key,))
             cur = self._conn.execute(
@@ -92,7 +102,8 @@ class EmbeddingCache:
                 )
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def __enter__(self) -> "EmbeddingCache":
         return self

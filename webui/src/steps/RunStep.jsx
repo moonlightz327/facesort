@@ -3,7 +3,7 @@ import { api, onEvent } from "../api.js";
 import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
 
-export default function RunStep({ config, people, goto }) {
+export default function RunStep({ config, people, setPeople, goto }) {
   const [progress, setProgress] = useState({ stage: "prepare", done: 0, total: 0 });
   const [running, setRunning] = useState(true);
   const [result, setResult] = useState(null);
@@ -73,6 +73,7 @@ export default function RunStep({ config, people, goto }) {
   const report = result.report;
   const persons = Object.entries(report.persons || {});
   const exec = report.execution || {};
+  const isCluster = config.mode === "cluster";
 
   return (
     <div className="animate-fade">
@@ -99,10 +100,12 @@ export default function RunStep({ config, people, goto }) {
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
         {persons.map(([name, n]) => (
-          <Card key={name} className="flex items-center justify-between p-3.5">
-            <span className="truncate text-sm font-medium">{name}</span>
-            <Badge tone="indigo">{n} 张</Badge>
-          </Card>
+          <PersonTile
+            key={name}
+            name={name}
+            count={n}
+            outputDir={result.outputDir}
+          />
         ))}
         <Card className="flex items-center justify-between p-3.5">
           <span className="text-sm text-slate-500">未识别</span>
@@ -120,8 +123,13 @@ export default function RunStep({ config, people, goto }) {
         )}
       </div>
 
-      {config.mode === "cluster" && persons.length > 0 && (
-        <SaveClusters clusters={persons} outputDir={result.outputDir} />
+      {isCluster && persons.length > 0 && (
+        <SaveClusters
+          clusters={persons}
+          outputDir={result.outputDir}
+          people={people}
+          setPeople={setPeople}
+        />
       )}
 
       {result.ambiguous?.length > 0 && (
@@ -209,22 +217,103 @@ function AmbiguousReview({ items, people, outputDir }) {
   );
 }
 
-function SaveClusters({ clusters, outputDir }) {
+/**
+ * One result folder, renameable in place. Covers the plain "I want this folder
+ * called something else" case for both modes — no sample library involved.
+ */
+function PersonTile({ name, count, outputDir }) {
+  const [current, setCurrent] = useState(name);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [busy, setBusy] = useState(false);
+
+  const commit = async () => {
+    const next = draft.trim();
+    if (!next || next === current) {
+      setEditing(false);
+      setDraft(current);
+      return;
+    }
+    setBusy(true);
+    const r = await api.renameGroup(outputDir, current, next);
+    setBusy(false);
+    if (r.ok) {
+      setCurrent(r.name);
+      setDraft(r.name);
+      setEditing(false);
+    } else {
+      alert(r.error);
+    }
+  };
+
+  return (
+    <Card className="flex items-center justify-between gap-2 p-3.5">
+      {editing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") {
+              setDraft(current);
+              setEditing(false);
+            }
+          }}
+          className="min-w-0 flex-1 rounded-lg border border-indigo-400 bg-white px-2 py-1 text-sm outline-none dark:bg-slate-800"
+        />
+      ) : (
+        <button
+          onClick={() => setEditing(true)}
+          className="group flex min-w-0 items-center gap-1.5"
+          title="重命名这个文件夹"
+        >
+          <span className="truncate text-sm font-medium">{current}</span>
+          <Icon
+            name="pencil"
+            className="w-3.5 h-3.5 shrink-0 text-slate-300 group-hover:text-indigo-500"
+          />
+        </button>
+      )}
+      {busy ? <Spinner className="w-4 h-4 text-indigo-500" /> : <Badge tone="indigo">{count} 张</Badge>}
+    </Card>
+  );
+}
+
+/**
+ * Closes the loop between the sample-free mode and the sample library: name a
+ * detected group, and its clearest faces are stored as reference samples (and
+ * the output folder renamed to match) so the next shoot can be sorted by name.
+ */
+function SaveClusters({ clusters, outputDir, people, setPeople }) {
   const [names, setNames] = useState(() =>
     Object.fromEntries(clusters.map(([c]) => [c, ""]))
   );
-  const [saved, setSaved] = useState({}); // cluster -> saved name
+  const [saved, setSaved] = useState({}); // cluster -> {name, saved, mergedInto}
   const [busy, setBusy] = useState(null);
+  const existing = (people || []).map((p) => p.name);
 
   const save = async (cluster) => {
     const name = (names[cluster] || "").trim();
     if (!name) return;
     setBusy(cluster);
-    const r = await api.saveClusterAsPerson(outputDir, cluster, name);
+    const r = await api.saveClusterAsPerson(outputDir, cluster, name, 4, true);
     setBusy(null);
-    if (r.ok) setSaved((s) => ({ ...s, [cluster]: r.name }));
-    else alert(r.error);
+    if (!r.ok) {
+      alert(r.error);
+      return;
+    }
+    setSaved((s) => ({
+      ...s,
+      [cluster]: { name: r.name, saved: r.saved, mergedInto: r.mergedInto },
+    }));
+    // Push the refreshed library straight into app state — without this the new
+    // person only showed up after a restart, so it never felt saved.
+    if (r.people) setPeople(r.people);
   };
+
+  const savedCount = Object.keys(saved).length;
 
   return (
     <Card className="mb-4 p-5">
@@ -232,20 +321,23 @@ function SaveClusters({ clusters, outputDir }) {
         <Icon name="users" className="w-4 h-4 text-indigo-500" />
         <h2 className="text-sm font-semibold">记住这些人（存为样本）</h2>
       </div>
-      <p className="mb-4 text-xs text-slate-400">
-        给自动分出的分组取个名字并保存，下次用「我有样本照片」模式就能直接按名字认出 TA。
+      <p className="mb-4 text-xs leading-relaxed text-slate-400">
+        给分组取个名字保存：软件会挑出这一组里最清晰的正脸存进人物库，并把输出文件夹一并改名。
+        下次用「我有样本照片」模式，就能直接按名字认出 TA。填已有的人名则会并入那个人。
       </p>
       <div className="space-y-2.5">
         {clusters.map(([cluster, n]) => {
           const done = saved[cluster];
           return (
             <div key={cluster} className="flex items-center gap-3">
-              <span className="w-20 shrink-0 text-sm text-slate-500">
+              <span className="w-24 shrink-0 truncate text-sm text-slate-500" title={cluster}>
                 {cluster} <span className="text-xs text-slate-400">·{n}</span>
               </span>
               {done ? (
                 <span className="flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400">
-                  <Icon name="check" className="w-4 h-4" /> 已存为「{done}」
+                  <Icon name="check" className="w-4 h-4" />
+                  {done.mergedInto ? `已并入「${done.name}」` : `已存为「${done.name}」`}
+                  <span className="text-xs text-slate-400">（{done.saved} 张样本）</span>
                 </span>
               ) : (
                 <>
@@ -254,6 +346,7 @@ function SaveClusters({ clusters, outputDir }) {
                     onChange={(e) => setNames((s) => ({ ...s, [cluster]: e.target.value }))}
                     onKeyDown={(e) => e.key === "Enter" && save(cluster)}
                     placeholder="输入真实姓名，如「张三」"
+                    list="facesort-people"
                     className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800"
                   />
                   <Button
@@ -269,6 +362,17 @@ function SaveClusters({ clusters, outputDir }) {
           );
         })}
       </div>
+      <datalist id="facesort-people">
+        {existing.map((n) => (
+          <option key={n} value={n} />
+        ))}
+      </datalist>
+      {savedCount > 0 && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2.5 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
+          <Icon name="check" className="w-4 h-4 shrink-0" />
+          已保存 {savedCount} 个人物到人物库，下次可直接用「我有样本照片」模式识别。
+        </div>
+      )}
     </Card>
   );
 }

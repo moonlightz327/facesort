@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { Button, Card, Icon, Spinner, Thumb, Badge, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
@@ -76,6 +76,47 @@ function ModeCard({ active, onClick, emoji, title, desc }) {
   );
 }
 
+/** Click-to-rename for a saved person; renaming onto an existing name merges. */
+function EditableName({ name, onRename }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+
+  useEffect(() => setDraft(name), [name]);
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="group flex items-center gap-1.5"
+        title="重命名"
+      >
+        <span className="text-base font-semibold">{name}</span>
+        <Icon name="pencil" className="w-3.5 h-3.5 text-slate-300 group-hover:text-indigo-500" />
+      </button>
+    );
+  }
+  const commit = () => {
+    setEditing(false);
+    onRename(name, draft);
+  };
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") {
+          setDraft(name);
+          setEditing(false);
+        }
+      }}
+      className="w-40 rounded-lg border border-indigo-400 bg-white px-2 py-1 text-base font-semibold outline-none dark:bg-slate-800"
+    />
+  );
+}
+
 function SampleManager({ people, setPeople, flags, setFlags, goto }) {
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
@@ -117,6 +158,14 @@ function SampleManager({ people, setPeople, flags, setFlags, goto }) {
     if (!confirm(`删除人物「${name}」及其样本？`)) return;
     await api.removePerson(name);
     await refresh();
+  };
+
+  const renamePerson = async (oldName, newName) => {
+    const next = (newName || "").trim();
+    if (!next || next === oldName) return;
+    const r = await api.renamePerson(oldName, next);
+    if (r.ok) setPeople(r.people);
+    else alert(r.error);
   };
 
   const removeSample = async (path) => {
@@ -161,7 +210,7 @@ function SampleManager({ people, setPeople, flags, setFlags, goto }) {
             <Card key={p.name} className="p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
-                  <span className="text-base font-semibold">{p.name}</span>
+                  <EditableName name={p.name} onRename={renamePerson} />
                   {p.samples?.length ? (
                     <Badge tone="green">{p.samples.length} 张样本</Badge>
                   ) : (

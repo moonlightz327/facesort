@@ -56,6 +56,7 @@ export const api = {
   listPeople: () => call("list_people"),
   addPerson: (name) => call("add_person", name),
   removePerson: (name) => call("remove_person", name),
+  renamePerson: (oldName, newName) => call("rename_person", oldName, newName),
   removeSample: (path) => call("remove_sample", path),
   pickSampleFiles: () => call("pick_sample_files"),
   addSamples: (name, paths) => call("add_samples", name, paths),
@@ -66,7 +67,17 @@ export const api = {
   cancel: () => call("cancel"),
   reassign: (src, person, outputDir, move) =>
     call("reassign", src, person, outputDir, move),
-  saveClusterAsPerson: (outputDir, clusterName, newName) =>
-    call("save_cluster_as_person", outputDir, clusterName, newName),
+  saveClusterAsPerson: (outputDir, clusterName, newName, count, renameFolder) =>
+    call("save_cluster_as_person", outputDir, clusterName, newName, count ?? 4,
+      renameFolder ?? true),
+  renameGroup: (outputDir, oldName, newName) =>
+    call("rename_group", outputDir, oldName, newName),
   openPath: (path) => call("open_path", path),
+
+  // Recognition model provisioning (first run / blocked network).
+  modelStatus: () => call("model_status"),
+  downloadModel: (sourceId) => call("download_model", sourceId ?? null),
+  cancelModelDownload: () => call("cancel_model_download"),
+  pickModelZip: () => call("pick_model_zip"),
+  installModelZip: (path) => call("install_model_zip", path),
 };

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { api, onEvent } from "../api.js";
 import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
+import ModelSetup from "../ModelSetup.jsx";
 
 const KIND_STYLE = {
   person: { tone: "indigo", icon: "users" },
@@ -10,10 +11,11 @@ const KIND_STYLE = {
   no_face: { tone: "slate", icon: "image" },
 };
 
-export default function PreviewStep({ config, preview, setPreview, goto }) {
+export default function PreviewStep({ config, setConfig, preview, setPreview, goto }) {
   const [progress, setProgress] = useState({ stage: "prepare", done: 0, total: 0, current: null });
   const [running, setRunning] = useState(!preview);
   const [error, setError] = useState(null);
+  const [modelIssue, setModelIssue] = useState(null); // model status when missing
   const [openGroup, setOpenGroup] = useState(null);
   const started = useRef(false);
 
@@ -24,20 +26,28 @@ export default function PreviewStep({ config, preview, setPreview, goto }) {
     return off;
   }, []);
 
-  useEffect(() => {
-    if (preview || started.current) return;
-    started.current = true;
+  const run = React.useCallback(() => {
     setRunning(true);
     setError(null);
+    setModelIssue(null);
     api
       .preview(config)
       .then((r) => {
         if (r.ok) setPreview(r);
-        else setError(r.error);
+        else {
+          setError(r.error);
+          if (r.modelMissing) setModelIssue(r.model);
+        }
       })
       .catch((e) => setError(String(e)))
       .finally(() => setRunning(false));
-  }, [preview, config, setPreview]);
+  }, [config, setPreview]);
+
+  useEffect(() => {
+    if (preview || started.current) return;
+    started.current = true;
+    run();
+  }, [preview, run]);
 
   const cancel = () => api.cancel();
 
@@ -74,6 +84,23 @@ export default function PreviewStep({ config, preview, setPreview, goto }) {
   }
 
   if (error) {
+    // A missing model is a setup problem the user can fix right here, so it gets
+    // the install panel instead of a raw ConnectTimeout dump.
+    if (modelIssue) {
+      return (
+        <div>
+          <StepHeader title="预览分图" desc="识别模型还没准备好，装好后即可继续。" />
+          <ModelSetup
+            model={modelIssue}
+            onReady={() => {
+              setModelIssue(null);
+              run();
+            }}
+          />
+          <StepNav onBack={() => goto(1)} />
+        </div>
+      );
+    }
     return (
       <div>
         <StepHeader title="预览分图" />
@@ -82,8 +109,13 @@ export default function PreviewStep({ config, preview, setPreview, goto }) {
             <Icon name="warning" className="mt-0.5 w-5 h-5 shrink-0" />
             <div>
               <div className="font-medium">无法预览</div>
-              <div className="mt-1 text-sm">{error}</div>
+              <div className="mt-1 whitespace-pre-wrap text-sm">{error}</div>
             </div>
+          </div>
+          <div className="mt-4">
+            <Button variant="outline" onClick={run}>
+              <Icon name="refresh" className="w-4 h-4" /> 重试
+            </Button>
           </div>
         </Card>
         <StepNav onBack={() => goto(1)} />
@@ -107,7 +139,11 @@ export default function PreviewStep({ config, preview, setPreview, goto }) {
       {config.mode === "cluster" && preview.clusters != null && (
         <div className="mb-5 flex items-start gap-2 rounded-xl bg-indigo-50 px-4 py-3 text-sm text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
           <Icon name="users" className="mt-0.5 w-4 h-4 shrink-0" />
-          自动分出 {preview.clusters} 个人物分组（人物1、人物2…）。整理完可在输出目录按需重命名文件夹；如果分得太细或把不同人并到一起，可返回上一步调整「分组精细度」。
+          <span>
+            自动分出 {preview.clusters} 个人物分组。
+            <b>可以直接在下面给每组取名</b>，整理时就会用这个名字建文件夹（留空则用 人物1、人物2…）。
+            如果分得太细或把不同人并到一起，可返回上一步调整「分组精细度」。
+          </span>
         </div>
       )}
 
@@ -148,7 +184,20 @@ export default function PreviewStep({ config, preview, setPreview, goto }) {
                   >
                     <Icon name={st.icon} className="w-4 h-4" />
                   </span>
-                  <span className="font-semibold">{g.label}</span>
+                  {config.mode === "cluster" && g.kind === "person" ? (
+                    <ClusterName
+                      cluster={g.label}
+                      value={config.clusterNames?.[g.label] || ""}
+                      onChange={(name) =>
+                        setConfig((c) => ({
+                          ...c,
+                          clusterNames: { ...(c.clusterNames || {}), [g.label]: name },
+                        }))
+                      }
+                    />
+                  ) : (
+                    <span className="font-semibold">{g.label}</span>
+                  )}
                   <Badge tone={st.tone}>{g.count} 张</Badge>
                 </div>
                 {g.items.length > 8 && (
@@ -187,6 +236,41 @@ export default function PreviewStep({ config, preview, setPreview, goto }) {
         onNext={() => goto(3)}
         nextLabel={config.move ? "开始整理（移动）" : "开始整理（复制）"}
       />
+    </div>
+  );
+}
+
+/**
+ * Inline rename for an auto-detected cluster. Naming happens before anything is
+ * written, so the folder is created as 「张三」 from the start rather than being
+ * renamed off 人物1 afterwards.
+ */
+function ClusterName({ cluster, value, onChange }) {
+  const [editing, setEditing] = useState(!!value);
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="group flex items-center gap-1.5 font-semibold hover:text-indigo-600 dark:hover:text-indigo-400"
+        title="给这一组取个名字"
+      >
+        {cluster}
+        <Icon name="pencil" className="w-3.5 h-3.5 text-slate-300 group-hover:text-indigo-500" />
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        autoFocus={!value}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => !value && setEditing(false)}
+        placeholder={cluster}
+        className="w-36 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-sm font-semibold outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800"
+      />
+      {value && <span className="text-xs text-slate-400">原 {cluster}</span>}
     </div>
   );
 }

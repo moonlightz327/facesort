@@ -51,10 +51,15 @@ def build_sample_library(
     samples_dir: Path,
     cache: Optional[EmbeddingCache] = None,
     on_progress: Optional[ProgressCallback] = None,
+    workers: int = 0,
 ) -> SampleLibrary:
     """samples/<person>/*.jpg -> library. Multiple faces in a sample photo:
-    take the largest and warn (edge #5). Empty samples dir or a person dir
-    with no valid face: hard error before anything is touched (edge #6)."""
+    take the largest and warn (edge #5).
+
+    A person with no usable sample is skipped with a warning rather than
+    aborting the run: the GUI lets you create a person before giving them
+    photos, and one such placeholder used to make every later run fail. Only an
+    entirely empty library is fatal (edge #6)."""
     samples_dir = Path(samples_dir)
     if not samples_dir.is_dir():
         raise ConfigError(f"样本目录不存在: {samples_dir}")
@@ -66,20 +71,17 @@ def build_sample_library(
 
     library = SampleLibrary()
     total = len(person_dirs)
+    empty_people: list[str] = []
     for i, person_dir in enumerate(person_dirs):
         person = person_dir.name
         images = sorted(p for p in person_dir.rglob("*") if p.is_file() and is_image_file(p))
         count = 0
-        for img_path in images:
-            analysis = cache.get(img_path) if cache is not None else None
-            if analysis is None:
-                try:
-                    analysis = engine.analyze(img_path)
-                except ImageReadError as e:
-                    library.warnings.append(f"样本图片无法读取，跳过: {img_path} ({e})")
-                    continue
-                if cache is not None:
-                    cache.put(img_path, analysis)
+        for img_path, analysis, exc, _cached in _analyze_many(
+            engine, images, cache=cache, workers=workers
+        ):
+            if exc is not None:
+                library.warnings.append(f"样本图片无法读取，跳过: {img_path} ({exc})")
+                continue
             if not analysis.faces:
                 library.warnings.append(f"样本图片未检测到人脸，跳过: {img_path}")
                 continue
@@ -91,15 +93,50 @@ def build_sample_library(
             library.add(person, face.embedding)
             count += 1
         if count == 0:
-            raise ConfigError(
-                f"人物 '{person}' 的样本目录 {person_dir} 没有任何有效人脸样本，请检查后重试"
+            empty_people.append(person)
+            library.warnings.append(
+                f"人物 '{person}' 还没有可用的人脸样本，本次跳过（请为 TA 添加清晰正脸样本）"
             )
         _emit(on_progress, ProgressEvent(
             stage="samples", done=i + 1, total=total, current=person,
             detail={"samples": count},
         ))
-    library.validate()
+    if not library.people:
+        detail = "、".join(empty_people) if empty_people else "无"
+        raise ConfigError(
+            f"没有任何人物拥有可用的人脸样本（已登记但缺样本: {detail}），"
+            "请先添加清晰的正脸样本照片"
+        )
     return library
+
+
+def _analyze_many(engine, paths, cache=None, workers: int = 0, cancel=None):
+    """Cache-first analysis of `paths`, yielding `(path, analysis, exception,
+    was_cached)` in input order.
+
+    Decode + inference run on a small thread pool; the cache is consulted inside
+    the worker (EmbeddingCache is lock-guarded). Only ImageReadError is handed
+    back per photo — anything else is a real bug and propagates."""
+    from .parallel import imap_ordered
+
+    def work(path: Path):
+        if cache is not None:
+            hit = cache.get(path)
+            if hit is not None:
+                return hit, True
+        analysis = engine.analyze(path)
+        if cache is not None:
+            cache.put(path, analysis)
+        return analysis, False
+
+    for path, result, exc in imap_ordered(work, paths, workers=workers, cancel=cancel):
+        if exc is not None:
+            if isinstance(exc, ImageReadError):
+                yield path, None, exc, False
+                continue
+            raise exc
+        analysis, was_cached = result
+        yield path, analysis, None, was_cached
 
 
 def scan_photos(input_dir: Path, output_dir: Path) -> tuple[list[Path], list[dict[str, str]]]:
@@ -181,7 +218,8 @@ def run_pipeline(
 
     with EmbeddingCache(cache_path) as cache:
         # 1. Sample library (hard errors surface before any file operation)
-        library = build_sample_library(engine, config.samples_dir, cache, on_progress)
+        library = build_sample_library(engine, config.samples_dir, cache, on_progress,
+                                       workers=config.workers)
         matcher = Matcher(library, threshold=config.threshold,
                           ambiguity_margin=config.ambiguity_margin)
 
@@ -191,33 +229,32 @@ def run_pipeline(
         _emit(on_progress, ProgressEvent(stage="scan", done=len(photos), total=len(photos),
                                          detail={"skipped": len(skipped), "units": len(units)}))
 
-        # 3. Analyze (cache-first) + match, cancellable between shots
+        # 3. Analyze (cache-first, parallel) + match, cancellable between shots
         outcomes: list[PhotoOutcome] = []
         analyzed = 0
+        done = 0
         cancelled = False
         total_units = len(units)
-        for i, (path, sidecars) in enumerate(units):
-            if _check_cancel(cancel):
-                cancelled = True
-                break
-            analysis = cache.get(path)
-            was_cached = analysis is not None
-            if analysis is None:
-                try:
-                    analysis = engine.analyze(path)
-                except ImageReadError as e:
-                    skipped.append({"path": str(path), "reason": f"图片损坏或无法读取: {e}"})
-                    _emit(on_progress, ProgressEvent(
-                        stage="analyze", done=i + 1, total=total_units, current=str(path),
-                        detail={"error": str(e)}))
-                    continue
-                cache.put(path, analysis)
+        sidecars_of = {path: sidecars for path, sidecars in units}
+        for path, analysis, exc, was_cached in _analyze_many(
+            engine, [p for p, _ in units], cache=cache,
+            workers=config.workers, cancel=cancel,
+        ):
+            done += 1
+            if exc is not None:
+                skipped.append({"path": str(path), "reason": f"图片损坏或无法读取: {exc}"})
+                _emit(on_progress, ProgressEvent(
+                    stage="analyze", done=done, total=total_units, current=str(path),
+                    detail={"error": str(exc)}))
+                continue
+            if not was_cached:
                 analyzed += 1
+            sidecars = sidecars_of.get(path, [])
             outcome = matcher.match_photo(analysis, config)
             outcome.sidecars = sidecars
             outcomes.append(outcome)
             _emit(on_progress, ProgressEvent(
-                stage="analyze", done=i + 1, total=total_units, current=str(path),
+                stage="analyze", done=done, total=total_units, current=str(path),
                 detail={
                     "faces": len(outcome.matches),
                     "persons": [m.person for m in outcome.matched],
@@ -225,6 +262,7 @@ def run_pipeline(
                     "cached": was_cached,
                     "sidecars": len(sidecars),
                 }))
+        cancelled = _check_cancel(cancel)
         analyze_elapsed = time.monotonic() - t0
 
         # 4. Plan
@@ -253,6 +291,35 @@ def run_pipeline(
 
     return PipelineResult(plan=plan, exec_result=exec_result, report=report,
                           cancelled=cancelled)
+
+
+def apply_cluster_names(
+    library: SampleLibrary,
+    names: dict[int, str],
+    overrides: dict[str, str],
+) -> tuple[SampleLibrary, dict[int, str]]:
+    """Rename auto-detected clusters (`人物1` -> `张三`) before planning.
+
+    Blank overrides are ignored, names are sanitized to be usable as folder
+    names, and two clusters mapped to the same name are merged into one person
+    (naming 人物1 and 人物3 both `张三` means they are the same person)."""
+    from .templates import sanitize_component
+
+    clean: dict[str, str] = {}
+    for old, new in overrides.items():
+        safe = sanitize_component(str(new or "").strip())
+        if safe and safe != old:
+            clean[old] = safe
+    if not clean:
+        return library, names
+
+    new_names = {cid: clean.get(old, old) for cid, old in names.items()}
+    merged = SampleLibrary(warnings=list(library.warnings))
+    for old, mat in library.people.items():
+        target = clean.get(old, old)
+        for row in mat:
+            merged.add(target, row)
+    return merged, new_names
 
 
 def run_cluster_pipeline(
@@ -287,39 +354,45 @@ def run_cluster_pipeline(
         _emit(on_progress, ProgressEvent(stage="scan", done=len(photos), total=len(photos),
                                          detail={"skipped": len(skipped), "units": len(units)}))
 
-        # Pass 1: analyze every shot; collect faces for clustering.
+        # Pass 1: analyze every shot; collect faces for clustering. Results come
+        # back in input order, so the clustering below stays deterministic even
+        # though the analysis itself runs in parallel.
         analyses: list[tuple[PhotoAnalysis, list[Path]]] = []
         face_embeddings: list = []
         photo_of_face: list[int] = []
         analyzed = 0
+        done = 0
         cancelled = False
         total_units = len(units)
-        for i, (path, sidecars) in enumerate(units):
-            if _check_cancel(cancel):
-                cancelled = True
-                break
-            analysis = cache.get(path)
-            if analysis is None:
-                try:
-                    analysis = engine.analyze(path)
-                except ImageReadError as e:
-                    skipped.append({"path": str(path), "reason": f"图片损坏或无法读取: {e}"})
-                    continue
-                cache.put(path, analysis)
+        sidecars_of = {path: sidecars for path, sidecars in units}
+        for path, analysis, exc, was_cached in _analyze_many(
+            engine, [p for p, _ in units], cache=cache,
+            workers=config.workers, cancel=cancel,
+        ):
+            done += 1
+            if exc is not None:
+                skipped.append({"path": str(path), "reason": f"图片损坏或无法读取: {exc}"})
+                continue
+            if not was_cached:
                 analyzed += 1
             idx = len(analyses)
-            analyses.append((analysis, sidecars))
+            analyses.append((analysis, sidecars_of.get(path, [])))
             for f in analysis.faces:
                 if f.min_side >= config.min_face:
                     face_embeddings.append(f.embedding)
                     photo_of_face.append(idx)
             _emit(on_progress, ProgressEvent(
-                stage="analyze", done=i + 1, total=total_units, current=str(path),
+                stage="analyze", done=done, total=total_units, current=str(path),
                 detail={"faces": len(analysis.faces)}))
+        cancelled = _check_cancel(cancel)
         analyze_elapsed = time.monotonic() - t0
 
-        # Cluster the collected faces into 人物1..N.
+        # Cluster the collected faces into 人物1..N, then apply any names the
+        # user typed in the preview so folders are written correctly the first
+        # time instead of being renamed afterwards.
         library, names = build_cluster_library(face_embeddings, photo_of_face, cthr)
+        if config.cluster_names:
+            library, names = apply_cluster_names(library, names, config.cluster_names)
         matcher = None
         if library.people:
             matcher = Matcher(library, threshold=cthr,
@@ -339,8 +412,11 @@ def run_cluster_pipeline(
         plan = build_plan(outcomes, config, skipped_files=skipped,
                           datetime_fn=get_photo_datetime)
         if names:
-            plan.warnings.insert(0, f"聚类模式：自动分出 {len(names)} 个人物分组"
-                                    "（人物1、人物2…），可在输出目录按需重命名文件夹")
+            renamed = sum(1 for n in names.values() if not n.startswith("人物"))
+            note = f"聚类模式：自动分出 {len(set(names.values()))} 个人物分组"
+            note += f"，其中 {renamed} 个已按你填写的名字命名" if renamed else \
+                    "（人物1、人物2…），可在预览页或整理完成后重命名"
+            plan.warnings.insert(0, note)
         _emit(on_progress, ProgressEvent(stage="plan", done=len(plan.items),
                                          total=len(plan.items)))
 

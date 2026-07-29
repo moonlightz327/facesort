@@ -96,6 +96,8 @@ export function Icon({ name, className = "w-5 h-5", ...props }) {
     warning: "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z",
     image: "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5Z|M8.5 11a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM21 15l-5-5L5 21",
     finder: "M4 4h16v16H4zM4 10h16M10 4v16",
+    refresh: "M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6",
+    pencil: "M12 20h9|M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z",
   };
   const d = paths[name] || "";
   return (
