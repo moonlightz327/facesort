@@ -3,6 +3,7 @@ import { api, onEvent } from "../api.js";
 import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
 import ModelProgress from "../ModelProgress.jsx";
+import { stageLabel, stagePercent } from "../stages.js";
 
 export default function RunStep({ config, people, setPeople, goto,
                                  runResult, setRunResult, task, setTask, startOver }) {
@@ -13,6 +14,7 @@ export default function RunStep({ config, people, setPeople, goto,
   const [running, setRunning] = useState(!runResult);
   const [error, setError] = useState(null);
   const [cancelled, setCancelled] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const result = runResult;
   const started = useRef(false);
 
@@ -53,13 +55,8 @@ export default function RunStep({ config, people, setPeople, goto,
   }, [config, runResult, setRunResult, setTask, task]);
 
   if (running) {
-    const pct = progress.total ? (progress.done / progress.total) * 100 : 0;
-    const label =
-      progress.stage === "execute"
-        ? `整理中 ${progress.done}/${progress.total}`
-        : progress.stage === "analyze"
-        ? `识别照片 ${progress.done}/${progress.total}`
-        : "准备中…";
+    const label = stageLabel(progress, { executing: true });
+    const pct = stagePercent(progress);
     return (
       <div>
         <StepHeader title="正在整理" desc="正在把照片归入对应文件夹，请稍候。" />
@@ -81,10 +78,26 @@ export default function RunStep({ config, people, setPeople, goto,
             </>
           )}
           <div className="mt-6">
-            <Button variant="outline" onClick={() => api.cancel()}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCancelling(true);
+                api.cancel();
+              }}
+              disabled={cancelling}
+            >
               <Icon name="x" className="w-4 h-4" />
-              {modelProgress ? "取消下载" : "取消（已完成的保留）"}
+              {cancelling
+                ? "正在取消…"
+                : modelProgress
+                ? "取消下载"
+                : "取消（已完成的保留）"}
             </Button>
+            {cancelling && (
+              <p className="mt-2 text-xs text-slate-400">
+                已收到取消请求，正在结束当前照片后停止；已整理好的照片会保留。
+              </p>
+            )}
           </div>
         </Card>
       </div>

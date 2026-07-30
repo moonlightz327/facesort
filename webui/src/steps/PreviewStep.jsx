@@ -4,6 +4,7 @@ import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../u
 import { StepHeader, StepNav } from "./StepShell.jsx";
 import ModelSetup from "../ModelSetup.jsx";
 import ModelProgress from "../ModelProgress.jsx";
+import { stageLabel, stagePercent } from "../stages.js";
 
 const KIND_STYLE = {
   person: { tone: "indigo", icon: "users" },
@@ -19,6 +20,7 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
   const [running, setRunning] = useState(!preview);
   const [error, setError] = useState(null);
   const [cancelled, setCancelled] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [modelIssue, setModelIssue] = useState(null); // model status when missing
   const [openGroup, setOpenGroup] = useState(null);
   const started = useRef(false);
@@ -43,6 +45,7 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
     setRunning(true);
     setError(null);
     setCancelled(false);
+    setCancelling(false);
     setModelIssue(null);
     setTask?.("preview");
     api
@@ -74,18 +77,17 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
     run();
   }, [preview, run, task]);
 
-  const cancel = () => api.cancel();
+  // Some phases cannot be interrupted mid-flight (building the onnx sessions is
+  // a synchronous C++ call), so acknowledge the click immediately instead of
+  // leaving the button looking dead.
+  const cancel = () => {
+    setCancelling(true);
+    api.cancel();
+  };
 
   if (running) {
-    const pct = progress.total ? (progress.done / progress.total) * 100 : 0;
-    const stageLabel =
-      progress.stage === "samples"
-        ? "读取人物样本…"
-        : progress.stage === "analyze"
-        ? `识别照片 ${progress.done}/${progress.total}`
-        : progress.stage === "scan"
-        ? "扫描照片…"
-        : "正在准备（首次需加载识别模型，请稍候）…";
+    const label = stageLabel(progress);
+    const pct = stagePercent(progress);
     return (
       <div>
         <StepHeader title="预览分图" desc="正在分析照片，先算好会怎么分，之后你确认了才真正动文件。" />
@@ -96,11 +98,9 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
             <>
               <div className="mb-4 flex items-center gap-3 text-sm text-slate-600 dark:text-slate-300">
                 <Spinner className="w-5 h-5 text-indigo-600" />
-                {stageLabel}
+                {label}
               </div>
-              <ProgressBar
-                value={progress.stage === "analyze" ? pct : progress.stage === "prepare" ? 0 : 5}
-              />
+              <ProgressBar value={pct} />
               {progress.current && progress.stage === "analyze" && (
                 <div className="mt-3 truncate font-mono text-xs text-slate-400">
                   {progress.current}
@@ -109,10 +109,15 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
             </>
           )}
           <div className="mt-6">
-            <Button variant="outline" onClick={cancel}>
+            <Button variant="outline" onClick={cancel} disabled={cancelling}>
               <Icon name="x" className="w-4 h-4" />
-              {modelProgress ? "取消下载" : "取消"}
+              {cancelling ? "正在取消…" : modelProgress ? "取消下载" : "取消"}
             </Button>
+            {cancelling && (
+              <p className="mt-2 text-xs text-slate-400">
+                已收到取消请求，正在结束当前照片后停止。
+              </p>
+            )}
           </div>
         </Card>
       </div>

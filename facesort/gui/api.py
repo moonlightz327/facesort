@@ -321,7 +321,10 @@ class Api:
             if self._cancel.is_set():
                 return {"ok": False, "cancelled": True, "error": "已取消"}
             result = self._run(config, cfg)
-            if result.cancelled:
+            # The pipeline samples the token once, after its analyze loop; a
+            # cancel that lands during planning would otherwise be dropped and
+            # the click would appear to do nothing.
+            if result.cancelled or self._cancel.is_set():
                 # A partial plan rendered as a normal preview looked like a
                 # finished result; make the interruption explicit instead.
                 return {"ok": False, "cancelled": True, "error": "已取消预览"}
@@ -350,7 +353,7 @@ class Api:
             result = self._run(config, cfg)
             return {
                 "ok": True,
-                "cancelled": result.cancelled,
+                "cancelled": result.cancelled or self._cancel.is_set(),
                 "report": result.report,
                 "outputDir": str(config.output_dir),
                 "ambiguous": self._ambiguous_payload(result, config),

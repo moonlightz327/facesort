@@ -105,4 +105,76 @@ test("non-preview targets never reset the plan", () => {
   }
 });
 
+
+// ---- progress stage mapping -------------------------------------------
+//
+// Regression cover for "after loading the model and the photos it jumps back to
+// 正在准备": the backend emits stage="plan" once analysis finishes, and the old
+// inline mapping had no case for it, so the label fell through to a default
+// that claimed the model was loading and the bar dropped to 5%.
+
+const { stageLabel, stagePercent, STAGES } = await import("../webui/src/stages.js");
+
+test("every stage the backend emits has a label", () => {
+  for (const stage of STAGES) {
+    const label = stageLabel({ stage, done: 3, total: 10 });
+    assert.ok(label && label.length, `no label for ${stage}`);
+    assert.ok(
+      !label.includes("识别模型"),
+      `stage "${stage}" must not claim the model is loading: ${label}`
+    );
+  }
+});
+
+test("plan no longer looks like a model-loading screen", () => {
+  const label = stageLabel({ stage: "plan", done: 10, total: 10 });
+  assert.equal(label, "正在生成分图方案…");
+});
+
+test("analyze and execute show counts", () => {
+  assert.equal(stageLabel({ stage: "analyze", done: 7, total: 20 }), "识别照片 7/20");
+  assert.equal(stageLabel({ stage: "execute", done: 4, total: 9 }), "整理中 4/9");
+});
+
+test("a zero total does not render NaN", () => {
+  assert.equal(stageLabel({ stage: "analyze", done: 0, total: 0 }), "识别照片…");
+  assert.ok(Number.isFinite(stagePercent({ stage: "analyze", done: 0, total: 0 })));
+});
+
+test("an unknown stage falls back without mentioning the model", () => {
+  const label = stageLabel({ stage: "something-new" });
+  assert.equal(label, "正在准备…");
+  assert.ok(!label.includes("识别模型"));
+});
+
+test("progress never goes backwards as the pipeline advances", () => {
+  const timeline = [
+    { stage: "prepare" },
+    { stage: "samples", done: 1, total: 2 },
+    { stage: "scan", done: 40, total: 40 },
+    { stage: "analyze", done: 1, total: 40 },
+    { stage: "analyze", done: 20, total: 40 },
+    { stage: "analyze", done: 40, total: 40 },
+    { stage: "cluster", done: 60, total: 60 },
+    { stage: "plan", done: 40, total: 40 },
+  ];
+  let prev = -1;
+  for (const ev of timeline) {
+    const pct = stagePercent(ev);
+    assert.ok(
+      pct >= prev,
+      `bar went backwards at ${ev.stage}: ${prev} -> ${pct}`
+    );
+    assert.ok(pct >= 0 && pct <= 100, `${ev.stage} out of range: ${pct}`);
+    prev = pct;
+  }
+});
+
+test("the analyze-to-plan transition is the exact regression", () => {
+  const analyzeDone = stagePercent({ stage: "analyze", done: 40, total: 40 });
+  const plan = stagePercent({ stage: "plan", done: 40, total: 40 });
+  assert.ok(plan >= analyzeDone, `plan (${plan}) must not drop below analyze (${analyzeDone})`);
+  assert.ok(plan > 5, "plan must not collapse to the old 5% fallback");
+});
+
 if (!process.exitCode) console.log(`navigation: ${passed} passed`);

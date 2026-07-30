@@ -397,7 +397,12 @@ def run_cluster_pipeline(
         # Cluster the collected faces into 人物1..N, then apply any names the
         # user typed in the preview so folders are written correctly the first
         # time instead of being renamed afterwards.
+        _emit(on_progress, ProgressEvent(stage="cluster", done=0,
+                                         total=len(face_embeddings),
+                                         detail={"faces": len(face_embeddings)}))
         library, names = build_cluster_library(face_embeddings, photo_of_face, cthr)
+        _emit(on_progress, ProgressEvent(stage="cluster", done=len(face_embeddings),
+                                         total=len(face_embeddings)))
         if config.cluster_names:
             library, names = apply_cluster_names(library, names, config.cluster_names)
         matcher = None
