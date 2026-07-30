@@ -63,6 +63,10 @@ class FaceEngine:
             except Exception:
                 pass
             self._app = app
+            # Terminal event: without it the UI's model panel never clears and
+            # covers the analyze progress bar for the rest of the run.
+            if on_model_progress:
+                on_model_progress({"phase": "done"})
         return self._app
 
     def analyze(self, path: Path, max_side: Optional[int] = None) -> PhotoAnalysis:

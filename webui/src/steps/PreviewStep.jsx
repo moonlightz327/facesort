@@ -13,7 +13,7 @@ const KIND_STYLE = {
 };
 
 export default function PreviewStep({ config, setConfig, preview, setPreview, goto,
-                                     setTask, model, setModel }) {
+                                     task, setTask, model, setModel }) {
   const [progress, setProgress] = useState({ stage: "prepare", done: 0, total: 0, current: null });
   const [modelProgress, setModelProgress] = useState(null);
   const [running, setRunning] = useState(!preview);
@@ -25,7 +25,13 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
 
   useEffect(() => {
     const off = onEvent((e) => {
-      if (e.event === "progress") setProgress(e);
+      if (e.event === "progress") {
+        setProgress(e);
+        // Analysis has started, so the model is ready regardless of whether a
+        // terminal model event arrived — never let the model panel cover the
+        // 识别照片 X/N progress bar.
+        setModelProgress(null);
+      }
       // The model may still be downloading; show that instead of a blank
       // "preparing" state the user cannot interpret.
       if (e.event === "model") setModelProgress(e.phase === "done" ? null : e);
@@ -60,10 +66,13 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
   }, [config, setPreview, setTask]);
 
   useEffect(() => {
-    if (preview || started.current) return;
+    // `started` is a ref and resets on unmount, so also bail when a task is
+    // already in flight — otherwise leaving to 设置 and coming back fires a
+    // second preview that the Python side rejects as 「已有任务在进行中」.
+    if (preview || started.current || task) return;
     started.current = true;
     run();
-  }, [preview, run]);
+  }, [preview, run, task]);
 
   const cancel = () => api.cancel();
 

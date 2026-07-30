@@ -6,6 +6,12 @@ import ConfigStep from "./steps/ConfigStep.jsx";
 import PreviewStep from "./steps/PreviewStep.jsx";
 import RunStep from "./steps/RunStep.jsx";
 import SettingsPage from "./SettingsPage.jsx";
+import {
+  SETTINGS,
+  blockedReason as navBlockedReason,
+  runningStepOf,
+  shouldResetPlan,
+} from "./navigation.js";
 
 const STEPS = [
   { id: "samples", label: "人物样本", hint: "登记要识别的人", icon: "users" },
@@ -13,8 +19,6 @@ const STEPS = [
   { id: "preview", label: "预览确认", hint: "先看分好的样子", icon: "eye" },
   { id: "run", label: "开始整理", hint: "执行并复核", icon: "check" },
 ];
-
-const SETTINGS = 99; // not a wizard step; reachable at any time
 
 export default function App() {
   const [dark, setDark] = useState(
@@ -63,26 +67,31 @@ export default function App() {
     [people]
   );
 
-  // Why a step is unreachable — the rail shows this as a tooltip instead of
-  // just looking broken.
-  const blockedReason = (target) => {
-    if (task) return "任务进行中，请先完成或取消";
-    if (target >= 1 && config.mode !== "cluster" && readySamples < 1)
-      return "至少需要一个人有样本照片";
-    if (target >= 2 && !config.inputDir) return "请先选择照片目录";
-    if (target === 3 && !preview && !runResult) return "请先预览分图结果";
-    return null;
+  // The step that owns the in-flight task, so it always stays reachable.
+  const runningStep = runningStepOf(task);
+
+  // Rules live in navigation.js so they stay testable; the rail surfaces the
+  // reason as a tooltip instead of just looking broken.
+  const navState = {
+    task,
+    mode: config.mode,
+    readySamples,
+    inputDir: config.inputDir,
+    preview,
+    runResult,
   };
+  const blockedReason = (target) => navBlockedReason(navState, target);
 
   const canGo = (target) => blockedReason(target) === null;
 
   const goto = (target) => {
     if (!canGo(target)) return;
-    // Re-entering preview from another step means the inputs may have changed,
-    // so drop the stale plan (and the names that went with it) plus any
-    // finished run — otherwise the wizard would show results that no longer
-    // match the settings above them.
-    if (target === 2 && step !== 2) {
+    // Coming back to a step whose task is still running must not reset it.
+    if (target === runningStep) {
+      setStep(target);
+      return;
+    }
+    if (shouldResetPlan(step, target)) {
       setPreview(null);
       setRunResult(null);
       setConfig((c) => ({ ...c, clusterNames: {} }));
@@ -130,7 +139,7 @@ export default function App() {
             const active = i === step;
             const done = step !== SETTINGS && i < step;
             const reason = blockedReason(i);
-            const running = !!task && active;
+            const running = i === runningStep;
             return (
               <button
                 key={s.id}
@@ -184,7 +193,15 @@ export default function App() {
 
         {task && (
           <div className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-            任务进行中，步骤已锁定。可在右侧点「取消」中断。
+            任务进行中，其他步骤暂时锁定。
+            {step !== runningStep && (
+              <button
+                onClick={() => goto(runningStep)}
+                className="mt-1 block font-medium underline hover:no-underline"
+              >
+                返回「{STEPS[runningStep]?.label}」
+              </button>
+            )}
           </div>
         )}
 
@@ -238,6 +255,19 @@ export default function App() {
               <Icon name="warning" className="w-4 h-4 shrink-0" />
               <span className="flex-1">
                 人脸识别模型还没安装（约 {model.sizeMB || 289}MB）。建议先到「设置」装好，避免整理时才开始等下载。
+              </span>
+              <Icon name="arrowRight" className="w-4 h-4 shrink-0" />
+            </button>
+          )}
+
+          {step === SETTINGS && task && (
+            <button
+              onClick={() => goto(runningStep)}
+              className="mb-6 flex w-full items-center gap-2 rounded-xl bg-indigo-50 px-4 py-3 text-left text-sm text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/60"
+            >
+              <Spinner className="w-4 h-4 shrink-0" />
+              <span className="flex-1">
+                「{STEPS[runningStep]?.label}」正在进行中，点这里返回查看进度。
               </span>
               <Icon name="arrowRight" className="w-4 h-4 shrink-0" />
             </button>

@@ -5,7 +5,7 @@ import { StepHeader, StepNav } from "./StepShell.jsx";
 import ModelProgress from "../ModelProgress.jsx";
 
 export default function RunStep({ config, people, setPeople, goto,
-                                 runResult, setRunResult, setTask, startOver }) {
+                                 runResult, setRunResult, task, setTask, startOver }) {
   const [progress, setProgress] = useState({ stage: "prepare", done: 0, total: 0 });
   const [modelProgress, setModelProgress] = useState(null);
   // A finished run lives in app state, so coming back to this step shows the
@@ -18,14 +18,23 @@ export default function RunStep({ config, people, setPeople, goto,
 
   useEffect(() => {
     const off = onEvent((e) => {
-      if (e.event === "progress") setProgress(e);
+      if (e.event === "progress") {
+        setProgress(e);
+        // Analysis has started, so the model is ready regardless of whether a
+        // terminal model event arrived — never let the model panel cover the
+        // 识别照片 X/N progress bar.
+        setModelProgress(null);
+      }
       if (e.event === "model") setModelProgress(e.phase === "done" ? null : e);
     });
     return off;
   }, []);
 
   useEffect(() => {
-    if (started.current || runResult) return;
+    // Same as PreviewStep: never re-issue on remount. For organize this is
+    // the difference between showing progress again and copying every photo
+    // a second time.
+    if (started.current || runResult || task) return;
     started.current = true;
     setTask?.("organize");
     api
@@ -41,7 +50,7 @@ export default function RunStep({ config, people, setPeople, goto,
         setModelProgress(null);
         setTask?.(null);
       });
-  }, [config, runResult, setRunResult, setTask]);
+  }, [config, runResult, setRunResult, setTask, task]);
 
   if (running) {
     const pct = progress.total ? (progress.done / progress.total) * 100 : 0;

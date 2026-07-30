@@ -1,6 +1,7 @@
 """Model provisioning: layout detection, manual zip import, mirror fallback."""
 
 import io
+import sys
 import zipfile
 
 import pytest
@@ -282,3 +283,40 @@ def test_ensure_model_forwards_cancel(home, monkeypatch):
     with pytest.raises(modelzoo.ModelCancelled):
         modelzoo.ensure_model(cancel=token)
     assert seen["cancel"] is token
+
+
+def test_engine_emits_a_terminal_done_event(home, tmp_path, monkeypatch):
+    """Without a terminal event the GUI's model panel never clears and covers
+    the analyze progress bar for the rest of the run."""
+    modelzoo.install_from_zip(_make_zip(tmp_path / "b.zip"))
+
+    from facesort.core.engine import FaceEngine
+
+    class FakeAnalysis:
+        def __init__(self, *a, **k):
+            pass
+
+        def prepare(self, **k):
+            pass
+
+        def get(self, img):
+            return []
+
+    import types
+    fake_mod = types.ModuleType("insightface.app")
+    fake_mod.FaceAnalysis = FakeAnalysis
+    monkeypatch.setitem(sys.modules, "insightface.app", fake_mod)
+
+    events = []
+    engine = FaceEngine()
+    engine._ensure_loaded(on_model_progress=events.append)
+
+    phases = [e["phase"] for e in events]
+    assert phases[-1] == "done", phases
+    assert "load" in phases
+
+    # Already loaded: a second call must stay silent so the UI goes straight to
+    # 识别照片 X/N instead of flashing a model panel.
+    events.clear()
+    engine._ensure_loaded(on_model_progress=events.append)
+    assert events == []
