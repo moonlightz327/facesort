@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, onEvent } from "../api.js";
-import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
+import { Button, Card, Icon, LazyThumb, Spinner, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
 import ModelProgress from "../ModelProgress.jsx";
+import Lightbox from "../Lightbox.jsx";
 import { stageLabel, stagePercent } from "../stages.js";
 
 export default function RunStep({ config, people, setPeople, goto,
@@ -156,6 +157,14 @@ export default function RunStep({ config, people, setPeople, goto,
           {config.move ? "已移动" : "已复制"} {(exec.copied || 0) + (exec.moved || 0)} 张
           {exec.skipped_existing ? ` · 跳过重复 ${exec.skipped_existing}` : ""}
           {exec.errors?.length ? ` · 出错 ${exec.errors.length}` : ""}
+          {/* APFS clones share storage with the original, so sorting a shoot
+              does not need a second copy of it on disk. Worth saying: it is the
+              difference between needing 200GB free and needing none. */}
+          {exec.cloned > 0 && (
+            <span className="text-emerald-600/80 dark:text-emerald-400/80">
+              {" "}· 其中 {exec.cloned} 张为秒级克隆，未额外占用空间
+            </span>
+          )}
         </div>
         <Button variant="outline" onClick={() => api.openPath(result.outputDir)}>
           <Icon name="finder" className="w-4 h-4" /> 在访达中打开
@@ -222,6 +231,15 @@ export default function RunStep({ config, people, setPeople, goto,
 
 function AmbiguousReview({ items, people, outputDir }) {
   const [resolved, setResolved] = useState({});
+  const [viewing, setViewing] = useState(null);
+  // The whole point of this list is deciding who someone is, so every row can
+  // be opened full-screen and paged through with ←/→.
+  const photos = items.map((a) => ({
+    src: a.photo,
+    persons: (a.candidates || []).filter(Boolean),
+    similarity: a.similarity,
+    reason: `${a.person} ${a.similarity?.toFixed(2)} vs ${a.second_person} ${a.second_similarity?.toFixed(2)}`,
+  }));
 
   const assign = async (photo, person) => {
     const r = await api.reassign(photo, person, outputDir, false);
@@ -236,16 +254,20 @@ function AmbiguousReview({ items, people, outputDir }) {
         <h2 className="text-sm font-semibold">拿不准像谁的照片（{items.length}）</h2>
       </div>
       <p className="mb-4 text-xs text-slate-400">
-        这些照片在两个人之间很接近。选一个人可把这张照片额外复制到 TA 的文件夹。
+        这些照片在两个人之间很接近。点缩略图可放大看清，选一个人可把这张照片额外复制到 TA 的文件夹。
       </p>
       <div className="space-y-3">
-        {items.map((a) => {
+        {items.map((a, i) => {
           const done = resolved[a.photo];
           const names = people.map((p) => p.name);
           const candidates = (a.candidates || []).filter(Boolean);
           return (
             <div key={a.photo} className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-800">
-              <Thumb src={a.thumb} alt="" className="h-16 w-16 shrink-0" />
+              <LazyThumb
+                path={a.photo}
+                className="h-16 w-16 shrink-0"
+                onOpen={() => setViewing(i)}
+              />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs text-slate-400">{a.photo.split("/").pop()}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -276,6 +298,14 @@ function AmbiguousReview({ items, people, outputDir }) {
           );
         })}
       </div>
+      {viewing != null && (
+        <Lightbox
+          items={photos}
+          index={viewing}
+          onIndex={setViewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </Card>
   );
 }

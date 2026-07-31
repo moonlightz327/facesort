@@ -74,6 +74,11 @@ export const api = {
     call("rename_group", outputDir, oldName, newName),
   openPath: (path) => call("open_path", path),
 
+  // Images fetched on demand: grid thumbnails in batches as tiles scroll into
+  // view, and one large decode when a photo is opened full-screen.
+  thumbs: (paths, size) => call("thumbs", paths, size ?? 200),
+  imageData: (path, size) => call("image_data", path, size ?? 1600),
+
   // Persisted settings (survive restarts; let users pre-configure the app).
   getSettings: () => call("get_settings"),
   saveSettings: (values) => call("save_settings", values),

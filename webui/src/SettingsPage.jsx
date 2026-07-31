@@ -49,6 +49,32 @@ export default function SettingsPage({ boot, model, setModel, settings, setSetti
         <ModelSetup model={model} onReady={setModel} manage />
       </div>
 
+      {boot?.accel?.available && (
+        <Card className="mb-6 p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <h2 className="text-sm font-semibold">硬件加速</h2>
+            <Badge tone="green">Apple 芯片</Badge>
+          </div>
+          <Row
+            label="用神经网络引擎 / GPU 识别"
+            hint="识别速度约提升 8 倍，结果与 CPU 一致。首次启用需要一次约 10 秒的模型编译，之后启动照常"
+          >
+            <input
+              type="checkbox"
+              checked={settings.useGpu !== false}
+              onChange={(e) => update({ useGpu: e.target.checked })}
+              className="h-4 w-4 shrink-0 rounded accent-indigo-600"
+            />
+          </Row>
+          <p className="mt-3 text-xs text-slate-400">
+            {boot.accel.active
+              ? `当前运行在 ${boot.accel.active}。`
+              : "首次识别时生效。"}
+            如果遇到异常，关掉这项会回到 CPU 模式（较慢但最稳妥）。
+          </p>
+        </Card>
+      )}
+
       <Card className="mb-6 p-5">
         <h2 className="mb-4 text-sm font-semibold">整理默认值</h2>
         <div className="space-y-4">

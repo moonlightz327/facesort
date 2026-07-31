@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +19,12 @@ from . import settings as app_settings
 from .library import PeopleLibrary, app_support_dir
 
 STRATEGIES = ["primary", "all", "group"]
+
+# Minimum gap between progress pushes to the page (seconds). See _progress_cb.
+_PROGRESS_INTERVAL = 1 / 15
+# Grid thumbnails are fetched by the page in batches as it scrolls; this caps
+# how much decoding one request can ask for.
+_THUMB_BATCH_MAX = 200
 
 FOLDER_PRESETS = [
     {"id": "person", "label": "人名", "folder": "{person}", "file": "{orig_name}{ext}"},
@@ -46,8 +53,20 @@ class Api:
     def _engine_get(self):
         if self._engine is None:
             from ..core.engine import FaceEngine
-            self._engine = FaceEngine()
+            self._engine = FaceEngine(
+                use_gpu=bool(app_settings.load().get("useGpu", True)))
         return self._engine
+
+    def accel_status(self) -> dict[str, Any]:
+        """Which execution provider recognition will use, for the 设置 page."""
+        from ..core.engine import coreml_available
+        engine = self._engine
+        return {
+            "available": coreml_available(),
+            "enabled": bool(app_settings.load().get("useGpu", True)),
+            # None until the model has actually been loaded once.
+            "active": engine.provider if engine is not None else None,
+        }
 
     def _push(self, event: str, payload: dict[str, Any]) -> None:
         if self._window is None:
@@ -74,6 +93,7 @@ class Api:
             "libraryPath": str(self.library.root),
             "model": model_status(),
             "autoWorkers": default_workers(),
+            "accel": self.accel_status(),
         }
 
     def warm_up(self) -> dict[str, Any]:
@@ -104,7 +124,14 @@ class Api:
                 "path": str(app_settings.settings_path())}
 
     def save_settings(self, values: dict[str, Any]) -> dict[str, Any]:
-        return {"ok": True, "settings": app_settings.save(values or {})}
+        before = app_settings.load().get("useGpu", True)
+        saved = app_settings.save(values or {})
+        # The execution provider is chosen when the model loads, so toggling it
+        # has to drop the loaded engine — otherwise the switch appears to do
+        # nothing until the app is restarted.
+        if bool(saved.get("useGpu", True)) != bool(before):
+            self._engine = None
+        return {"ok": True, "settings": saved}
 
     def reset_settings(self) -> dict[str, Any]:
         return {"ok": True, "settings": app_settings.reset()}
@@ -240,6 +267,29 @@ class Api:
             results.append(info)
         return {"ok": True, "samples": results}
 
+    # ---- on-demand images ------------------------------------------------
+    def thumbs(self, paths: list[str], size: int = 200) -> dict[str, Any]:
+        """Grid thumbnails for the photos the page is about to draw.
+
+        Called as the user scrolls, so only what is on screen ever gets
+        decoded. Generation is parallel and results are cached, which makes
+        re-opening a group instant."""
+        paths = [p for p in (paths or []) if p][:_THUMB_BATCH_MAX]
+        size = max(48, min(int(size or 200), 400))
+        return {"ok": True, "thumbs": thumbs.many(paths, size=size)}
+
+    def image_data(self, path: str, size: int = 1600) -> dict[str, Any]:
+        """A large preview of one photo, for the full-screen viewer.
+
+        The point is judging *who* is in a shot, so this is decoded much bigger
+        than a grid thumb — still scaled down from the original, because a 24MP
+        frame does not fit in a WebView data URI budget and would not help."""
+        size = max(400, min(int(size or 1600), 2400))
+        uri = thumbs.data_uri(Path(path), size=size, quality=88)
+        if uri is None:
+            return {"ok": False, "error": "无法读取这张照片"}
+        return {"ok": True, "image": uri, "name": Path(path).name, "path": path}
+
     # ---- folder pickers -------------------------------------------------
     def pick_folder(self, title: str = "选择文件夹") -> Optional[str]:
         if self._window is None:
@@ -289,14 +339,46 @@ class Api:
             decode_max_side=int(cfg.get("decodeMaxSide", 1400) or 0),
             cluster_names={str(k): str(v) for k, v in
                            (cfg.get("clusterNames") or {}).items() if str(v).strip()},
+            cluster_min_photos=int(cfg.get("clusterMinPhotos", 2) or 1),
         )
 
     def _progress_cb(self):
+        """Progress pushes, rate-limited to ~15/s.
+
+        `_push` is a synchronous round-trip to the WebView's main thread. On a
+        5000-photo shoot the execute stage fired one per file, saturating that
+        thread — which is also the thread that delivers 「取消」 back to Python,
+        so the button did nothing while the copy loop looked frozen. Dropping
+        intermediate frames costs nothing visually (the bar cannot move by more
+        than a pixel between them) and keeps the bridge responsive.
+
+        The last event of every stage is always sent, so the bar still lands on
+        a clean N/N instead of stopping a few photos short.
+
+        The running per-person tally is accumulated here, off every event rather
+        than the sampled ones, so dropped frames cannot make it undercount. It
+        is what lets the page show groups filling up *during* recognition —
+        matching has always happened per photo, it just had no way to say so
+        until the whole run finished."""
+        state = {"t": 0.0, "stage": None}
+        tally: dict[str, int] = {}
+
         def cb(ev):
+            if ev.stage == "analyze" and ev.detail:
+                for person in ev.detail.get("persons") or ():
+                    tally[person] = tally.get(person, 0) + 1
+            now = time.monotonic()
+            final = ev.total and ev.done >= ev.total
+            if (not final and ev.stage == state["stage"]
+                    and now - state["t"] < _PROGRESS_INTERVAL):
+                return
+            state["t"] = now
+            state["stage"] = ev.stage
             self._push("progress", {
                 "stage": ev.stage, "done": ev.done, "total": ev.total,
                 "current": Path(ev.current).name if ev.current else None,
                 "detail": ev.detail,
+                "tally": sorted(tally.items(), key=lambda kv: -kv[1])[:12],
             })
         return cb
 
@@ -399,9 +481,13 @@ class Api:
                 b = bucket("noface", config.no_face_dir, "no_face")
             else:
                 continue
+            # No thumbnail here on purpose: the page asks for the ones it is
+            # about to draw via `thumbs()`. Decoding all of them up front is
+            # what made 「正在生成分图方案」 take minutes on a big shoot — the
+            # analysis was long done, we were just rendering 5000 JPEGs nobody
+            # had scrolled to yet.
             b["items"].append({
                 "src": item.src,
-                "thumb": thumbs.data_uri(Path(item.src), size=200),
                 "name": Path(item.dst).name,
                 "similarity": item.similarity,
                 "persons": item.persons,
@@ -425,14 +511,17 @@ class Api:
         }
 
     def _ambiguous_payload(self, result, config: Config) -> list[dict[str, Any]]:
-        out = []
-        for a in result.plan.ambiguous:
-            out.append({
-                **a,
-                "thumb": thumbs.data_uri(Path(a["photo"]), size=200),
-                "candidates": [a["person"], a["second_person"]],
-            })
-        return out
+        """Photos the matcher could not confidently place, for manual review.
+
+        Thumbnail-free like `_group_plan`, and for the same reason: this used to
+        run *after* every file had been copied, decoding one original per
+        ambiguous photo with no progress and no cancel check. On a 5000-photo
+        shoot that is where 「正在整理」 sat at 100% for minutes with a dead
+        cancel button."""
+        return [
+            {**a, "candidates": [a["person"], a["second_person"]]}
+            for a in result.plan.ambiguous
+        ]
 
     # ---- post-hoc correction / finder ----------------------------------
     def reassign(self, src: str, to_person: str, output_dir: str,

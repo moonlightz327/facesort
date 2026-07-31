@@ -223,6 +223,54 @@ def test_execute_never_overwrites_unplanned_existing(tmp_path):
     assert dst.read_bytes() == b"pre-existing-longer-content"  # preserved
 
 
+def test_execute_removes_partial_destination_on_failure(tmp_path, monkeypatch):
+    """A copy that dies partway must not leave the half-written file behind.
+
+    Reported from a ~5000-photo run: the output folder held photos that looked
+    organized but were 0 bytes. copy2 creates the destination before it writes
+    any data, so any mid-copy failure left one of those."""
+    import shutil as _shutil
+
+    from facesort.core import organizer
+
+    src = _touch(tmp_path / "in" / "a.jpg", b"payload")
+    plan = build_plan([_outcome(src, [_match("张三", 0.7)])], _config(tmp_path))
+    dst = Path(plan.items[0].dst)
+
+    def dying_copy(s, d, *a, **kw):
+        Path(d).write_bytes(b"")           # what copy2 does first
+        raise OSError("设备未就绪")         # ...and then the drive goes away
+
+    monkeypatch.setattr(organizer, "_CLONEFILE", None)  # exercise the copy path
+    monkeypatch.setattr(_shutil, "copy2", dying_copy)
+    result = execute_plan(plan)
+
+    assert result.copied == 0
+    assert len(result.errors) == 1
+    assert not dst.exists(), "0 字节的半成品必须删掉，不能冒充整理好的照片"
+    assert src.read_bytes() == b"payload"  # source never at risk
+
+
+def test_execute_keeps_a_pre_existing_file_it_did_not_create(tmp_path, monkeypatch):
+    """The cleanup above must only remove files this run created."""
+    import shutil as _shutil
+
+    from facesort.core import organizer
+
+    src = _touch(tmp_path / "in" / "a.jpg", b"new")
+    plan = build_plan([_outcome(src, [_match("张三", 0.7)])], _config(tmp_path))
+    dst = Path(plan.items[0].dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(b"someone-elses-file")
+
+    monkeypatch.setattr(organizer, "_CLONEFILE", None)
+    monkeypatch.setattr(_shutil, "copy2", lambda *a, **kw: None)
+    result = execute_plan(plan)
+
+    assert len(result.errors) == 1
+    assert dst.read_bytes() == b"someone-elses-file"
+
+
 def test_execute_cancel_stops_early(tmp_path):
     import threading
     outs = []

@@ -47,7 +47,7 @@ def is_raw_file(path: Path) -> bool:
     return path.suffix.lower() in RAW_EXTS
 
 
-def _apply_draft(im: Image.Image, max_side: Optional[int]) -> None:
+def apply_draft(im: Image.Image, max_side: Optional[int]) -> None:
     """Ask libjpeg to decode at a reduced DCT scale (1/2, 1/4, 1/8).
 
     A no-op for non-JPEG formats and for images already smaller than `max_side`.
@@ -79,7 +79,7 @@ def _load_raw_bgr(path: Path, max_side: Optional[int] = None) -> tuple[np.ndarra
             if thumb is not None and thumb.format == rawpy.ThumbFormat.JPEG:
                 with Image.open(io.BytesIO(thumb.data)) as im:
                     full_w = im.width
-                    _apply_draft(im, max_side)
+                    apply_draft(im, max_side)
                     decoded_w = im.width
                     im = ImageOps.exif_transpose(im)
                     arr = np.asarray(im.convert("RGB"))
@@ -109,7 +109,7 @@ def load_image_bgr_scaled(
             # Measure before exif_transpose so a 90-degree rotation cannot swap
             # the axes out from under the ratio; draft scales both uniformly.
             full_w = im.width
-            _apply_draft(im, max_side)
+            apply_draft(im, max_side)
             decoded_w = im.width
             im = ImageOps.exif_transpose(im)
             rgb = im.convert("RGB")

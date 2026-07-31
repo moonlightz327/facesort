@@ -7,7 +7,9 @@
 // model-loading screen. See scripts/test_navigation.mjs.
 
 /** Stages the core pipeline emits, in the order they occur. */
-export const STAGES = ["prepare", "samples", "scan", "analyze", "cluster", "plan", "execute"];
+export const STAGES = [
+  "prepare", "samples", "scan", "analyze", "cluster", "plan", "execute", "finalize",
+];
 
 const LABELS = {
   prepare: "正在准备…",
@@ -15,6 +17,9 @@ const LABELS = {
   scan: "扫描照片…",
   cluster: "正在归并相同人物…",
   plan: "正在生成分图方案…",
+  // The tail of a run is not instant on a big shoot (report + cache flush), and
+  // a bar parked at a finished N/N reads as a freeze. Name what is happening.
+  finalize: "正在收尾（写运行报告）…",
 };
 
 /**
@@ -62,5 +67,6 @@ export function stagePercent(progress) {
     const frac = p.total ? Math.min(Math.max(p.done / p.total, 0), 1) : 0;
     return frac * 100;
   }
+  if (p.stage === "finalize") return 100;
   return FIXED[p.stage] ?? 0;
 }

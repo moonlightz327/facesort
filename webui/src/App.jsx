@@ -42,6 +42,8 @@ export default function App() {
     workers: 0, // 0 = auto-size the analyze thread pool
     decodeMaxSide: 1400, // 0 = decode at full resolution (slower)
     clusterNames: {}, // 人物N -> 用户自定义名字（聚类模式）
+    // 聚类模式：出现张数少于这个值的人不单独建组（1 = 每张脸都可能成一组）
+    clusterMinPhotos: 2,
   });
   const [preview, setPreview] = useState(null); // dry-run result
   const [runResult, setRunResult] = useState(null); // completed organize result

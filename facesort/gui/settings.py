@@ -31,6 +31,10 @@ DEFAULTS: dict[str, Any] = {
     "workers": 0,          # 0 = auto
     "decodeMaxSide": 1400,  # 0 = full-resolution decode
     "modelUrl": "",        # optional custom download source
+    # Run recognition on the Apple Neural Engine / GPU where available (~8x).
+    # Off falls back to the CPU; the engine also falls back on its own if the
+    # accelerated path fails to load, so this is for deliberate opt-out only.
+    "useGpu": True,
 }
 
 _lock = threading.Lock()

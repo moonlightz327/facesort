@@ -1,5 +1,6 @@
 // Small shared UI primitives. Slate + indigo, light/dark aware.
 import React from "react";
+import { useLazyThumb } from "./thumbs.js";
 
 export function cx(...parts) {
   return parts.filter(Boolean).join(" ");
@@ -109,12 +110,13 @@ export function Icon({ name, className = "w-5 h-5", ...props }) {
   );
 }
 
-export function Thumb({ src, alt, className, onClick }) {
+export function Thumb({ src, alt, className, onClick, title, children }) {
   return (
     <div
       onClick={onClick}
+      title={title}
       className={cx(
-        "relative overflow-hidden rounded-lg bg-slate-100 dark:bg-slate-800",
+        "group relative overflow-hidden rounded-lg bg-slate-100 dark:bg-slate-800",
         onClick && "cursor-pointer",
         className
       )}
@@ -126,6 +128,27 @@ export function Thumb({ src, alt, className, onClick }) {
           <Icon name="image" />
         </div>
       )}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A grid tile whose thumbnail is fetched only once it scrolls into view, and
+ * which opens the photo full-screen when clicked. `src` here is the photo path,
+ * not image data — see thumbs.js for why the page pulls images itself.
+ */
+export function LazyThumb({ path, size = 200, className, title, onOpen }) {
+  const [uri, ref] = useLazyThumb(path, size);
+  return (
+    <div ref={ref} className={cx("min-h-0", className)}>
+      <Thumb src={uri} alt="" title={title} onClick={onOpen} className="h-full w-full">
+        {onOpen && (
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-slate-900/0 text-white/0 transition group-hover:bg-slate-900/35 group-hover:text-white">
+            <Icon name="eye" className="w-6 h-6" />
+          </span>
+        )}
+      </Thumb>
     </div>
   );
 }

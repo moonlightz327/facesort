@@ -207,7 +207,7 @@ def run_pipeline(
     if engine is None:
         from .engine import FaceEngine
 
-        engine = FaceEngine()
+        engine = FaceEngine(use_gpu=config.use_gpu)
 
     config.input_dir = Path(config.input_dir).resolve()
     config.output_dir = Path(config.output_dir).resolve()
@@ -284,6 +284,7 @@ def run_pipeline(
             exec_result = execute_plan(plan, on_progress=on_progress, cancel=cancel)
             cancelled = cancelled or exec_result.cancelled
 
+        _emit(on_progress, ProgressEvent(stage="finalize", done=0, total=1))
         elapsed = time.monotonic() - t0
         report = report_mod.build_report(
             config=config, plan=plan, exec_result=exec_result,
@@ -294,6 +295,7 @@ def run_pipeline(
 
     if not config.dry_run:
         report_mod.write_report(report, config.output_dir)
+    _emit(on_progress, ProgressEvent(stage="finalize", done=1, total=1))
 
     return PipelineResult(plan=plan, exec_result=exec_result, report=report,
                           cancelled=cancelled)
@@ -345,7 +347,7 @@ def run_cluster_pipeline(
     t0 = time.monotonic()
     if engine is None:
         from .engine import FaceEngine
-        engine = FaceEngine()
+        engine = FaceEngine(use_gpu=config.use_gpu)
 
     config.input_dir = Path(config.input_dir).resolve()
     config.output_dir = Path(config.output_dir).resolve()
@@ -364,8 +366,10 @@ def run_cluster_pipeline(
         # back in input order, so the clustering below stays deterministic even
         # though the analysis itself runs in parallel.
         analyses: list[tuple[PhotoAnalysis, list[Path]]] = []
-        face_embeddings: list = []
-        photo_of_face: list[int] = []
+        # (embedding, photo index, det_score) for every face big enough to matter;
+        # the confidence gate is applied after the loop so it can be relaxed if
+        # it would otherwise leave nothing to cluster.
+        candidates: list[tuple] = []
         analyzed = 0
         done = 0
         cancelled = False
@@ -386,13 +390,22 @@ def run_cluster_pipeline(
             analyses.append((analysis, sidecars_of.get(path, [])))
             for f in analysis.faces:
                 if f.min_side >= config.min_face:
-                    face_embeddings.append(f.embedding)
-                    photo_of_face.append(idx)
+                    candidates.append((f.embedding, idx, f.det_score))
             _emit(on_progress, ProgressEvent(
                 stage="analyze", done=done, total=total_units, current=str(path),
                 detail={"faces": len(analysis.faces)}))
         cancelled = _check_cancel(cancel)
         analyze_elapsed = time.monotonic() - t0
+
+        # Only confident detections get a vote on who the people in this shoot
+        # are; pass 2 below matches *every* face against the groups they define,
+        # so a weak face is placed, never dropped. If the gate would leave
+        # nothing to cluster (a soft-focus or heavily backlit set), fall back to
+        # all of them — some grouping beats none.
+        confident = [c for c in candidates if c[2] >= config.cluster_min_det]
+        usable = confident if confident else candidates
+        face_embeddings = [c[0] for c in usable]
+        photo_of_face = [c[1] for c in usable]
 
         # Cluster the collected faces into 人物1..N, then apply any names the
         # user typed in the preview so folders are written correctly the first
@@ -400,7 +413,10 @@ def run_cluster_pipeline(
         _emit(on_progress, ProgressEvent(stage="cluster", done=0,
                                          total=len(face_embeddings),
                                          detail={"faces": len(face_embeddings)}))
-        library, names = build_cluster_library(face_embeddings, photo_of_face, cthr)
+        library, names = build_cluster_library(
+            face_embeddings, photo_of_face, cthr,
+            min_cluster_photos=max(1, config.cluster_min_photos),
+        )
         _emit(on_progress, ProgressEvent(stage="cluster", done=len(face_embeddings),
                                          total=len(face_embeddings)))
         if config.cluster_names:
@@ -429,6 +445,13 @@ def run_cluster_pipeline(
             note += f"，其中 {renamed} 个已按你填写的名字命名" if renamed else \
                     "（人物1、人物2…），可在预览页或整理完成后重命名"
             plan.warnings.insert(0, note)
+            if config.cluster_min_photos > 1:
+                # Say where the leftovers went, so a smaller-than-expected set of
+                # folders reads as a setting rather than as lost photos.
+                plan.warnings.insert(1, (
+                    f"只有在 {config.cluster_min_photos} 张以上照片里出现过的人才单独建组；"
+                    "偶然入镜的人已归入「_未识别」。想连他们也分出来，可在上一步把这个值改成 1"
+                ))
         _emit(on_progress, ProgressEvent(stage="plan", done=len(plan.items),
                                          total=len(plan.items)))
 
@@ -437,6 +460,7 @@ def run_cluster_pipeline(
             exec_result = execute_plan(plan, on_progress=on_progress, cancel=cancel)
             cancelled = cancelled or exec_result.cancelled
 
+        _emit(on_progress, ProgressEvent(stage="finalize", done=0, total=1))
         elapsed = time.monotonic() - t0
         report = report_mod.build_report(
             config=config, plan=plan, exec_result=exec_result,
@@ -448,6 +472,7 @@ def run_cluster_pipeline(
 
     if not config.dry_run:
         report_mod.write_report(report, config.output_dir)
+    _emit(on_progress, ProgressEvent(stage="finalize", done=1, total=1))
 
     return PipelineResult(plan=plan, exec_result=exec_result, report=report,
                           cancelled=cancelled)

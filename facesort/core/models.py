@@ -152,6 +152,18 @@ class Config:
     # Cluster mode only: rename auto-detected groups before anything is written,
     # e.g. {"人物1": "张三"}. Unlisted clusters keep their 人物N name.
     cluster_names: dict[str, str] = field(default_factory=dict)
+    # Cluster mode only — which faces are allowed to *define* a person.
+    # A weak detection (motion blur, hard profile, a face on a poster) yields an
+    # embedding that matches nobody, so every one of them used to become its own
+    # 人物N folder. These two gates are why a 6-person shoot produced 100+
+    # folders. Neither drops a photo: every face, weak ones included, is still
+    # matched against the resulting groups afterwards.
+    cluster_min_det: float = 0.65      # SCRFD confidence to seed a group
+    cluster_min_photos: int = 2        # a person seen in one frame is not a group
+    # Run recognition on the Neural Engine / GPU when the platform has one.
+    # Only consulted when the pipeline builds its own engine; a caller that
+    # passes an engine has already made this choice.
+    use_gpu: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -174,6 +186,8 @@ class Config:
             "workers": self.workers,
             "decode_max_side": self.decode_max_side,
             "cluster_names": dict(self.cluster_names),
+            "cluster_min_det": self.cluster_min_det,
+            "cluster_min_photos": self.cluster_min_photos,
         }
 
 
@@ -223,7 +237,9 @@ class Plan:
 
 @dataclass
 class ProgressEvent:
-    """Emitted per photo. stage: scan | analyze | plan | execute."""
+    """Emitted per photo.
+
+    stage: samples | scan | analyze | cluster | plan | execute | finalize."""
 
     stage: str
     done: int

@@ -136,6 +136,34 @@ export default function ConfigStep({ boot, config, setConfig, goto }) {
             </button>
           ))}
         </div>
+
+        {/* Sample-free mode only. Without this floor every stray face — a hard
+            profile, a blurry passer-by — becomes its own 人物N folder, which is
+            how a six-person shoot came back as a hundred groups. */}
+        {config.mode === "cluster" && (
+          <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800">
+            <div className="mb-2 text-sm text-slate-600 dark:text-slate-300">
+              出现少于
+              <select
+                value={config.clusterMinPhotos ?? 2}
+                onChange={(e) => set({ clusterMinPhotos: parseInt(e.target.value, 10) })}
+                className="mx-2 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800"
+              >
+                {[1, 2, 3, 5, 10].map((n) => (
+                  <option key={n} value={n}>
+                    {n} 张
+                  </option>
+                ))}
+              </select>
+              的人不单独建组
+            </div>
+            <p className="text-xs leading-relaxed text-slate-400">
+              {config.clusterMinPhotos === 1
+                ? "每张认出的脸都可能单独成一组，路人、糊掉的侧脸也会各占一个文件夹。"
+                : `只在多张照片里出现过的人才会分出文件夹；偶然入镜的路人会归入「_未识别」，不再制造大量只有一两张的分组。`}
+            </p>
+          </div>
+        )}
       </Card>
 
       {/* Naming */}

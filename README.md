@@ -48,11 +48,13 @@ Naming a group and hitting **Save** stores its clearest front‑facing shots in 
 ### FAQ
 
 - **Some photos went to "Unrecognized" — why?** The samples weren't clear enough, or that person isn't added. Add more/clearer samples, or lower the strictness slider a bit.
+- **Sample-free mode made a hundred "人物N" folders?** As of 1.1.0 only people who appear in several photos, detected confidently, get a folder of their own; a stranger caught in one frame goes to "Unrecognized" instead. The threshold is adjustable in the sort settings (set it to 1 for the old behaviour).
 - **Does it support RAW?** Yes — CR2/CR3/NEF/ARW/DNG and more. If a shot has both a RAW and a JPEG, they're kept together.
 - **Changing a setting and re‑sorting — is it slow?** No. Results are cached, so re‑runs are near‑instant.
 - **Install the model before you start.** Open **Settings** in the left rail and install it there — you'll see percentage, speed and ETA while it downloads, and it can be cancelled at any time. Doing it up front beats waiting mid-sort.
 - **The model download keeps failing / times out.** It tries several built‑in mirrors in turn, and you can pick a specific one from the dropdown. If they're all blocked, use **import zip**: download `buffalo_l.zip` on a machine that can reach the internet, copy it over, and select it.
-- **Can it go faster?** It already analyzes photos in parallel and decodes large JPEGs at half size (detection runs at 640×640 either way), which together make a 24MP shoot roughly 2–3× faster than a naive pass. Both are tunable under advanced settings — turn on "decode at full resolution" if you'd rather have the last 0.2% of recognition accuracy.
+- **Can it go faster?** On Apple Silicon recognition runs on the Neural Engine / GPU, which is about **8× faster** than the CPU with identical results (measured on a 24MP six-face frame: 515 ms → 61 ms per photo). The first launch spends ~10 s compiling the model for the accelerator and caches it; later launches start as fast as before. It also analyzes photos in parallel and decodes large JPEGs at reduced size. All of it is tunable in **Settings**.
+- **Do I need twice the disk space to sort a shoot?** On macOS, no. Copies onto the same APFS volume are copy-on-write clones: a 200 GB shoot sorts in seconds and takes essentially no extra space. Each clone is a normal, independent file — editing or deleting one doesn't affect the other. On other filesystems it falls back to a regular copy.
 - **Is my data uploaded anywhere?** No. Everything runs locally on your machine.
 
 ### For power users
@@ -125,7 +127,9 @@ FaceSort（分图）会看每一张照片、认出里面是谁，然后把它复
 - **改个设置重新整理会很慢吗？** 不会。结果有缓存，重跑几乎是秒出。
 - **可以先把模型装好吗？** 可以。左侧「设置」里随时能装，下载过程有百分比、速度和剩余时间，也能随时取消。建议先装好，别等到整理照片时才开始下载。
 - **下载模型一直失败 / 提示连接超时？** 会依次试内置的几个加速镜像；也可以在下拉里指定某一个。全都不通就用**手动导入 zip**：在能上网的机器上下载 `buffalo_l.zip`，拷过来选中即可。
-- **能更快吗？** 默认已经并行分析 + 把大 JPEG 解码到一半尺寸（反正检测都在 640×640 上跑），24MP 的片子合起来比朴素处理快约 2–3 倍。两者都能在高级选项里调；想要那最后 0.2% 的识别精度，可以勾选"按原始分辨率解码"。
+- **能更快吗？** Apple 芯片上识别默认跑在神经网络引擎 / GPU，比 CPU 快约 **8 倍**且结果一致（24MP、6 张脸的实测：每张 515ms → 61ms）。首次启动会花约 10 秒为加速器编译模型并缓存下来，之后启动照常。此外还有并行分析和大图缩放解码，都能在「设置」里调。
+- **整理一次是不是要占用一份等量的磁盘空间？** 在 macOS 上不需要。复制到同一个 APFS 卷时用的是写时复制克隆：200GB 的片子几秒整理完，几乎不额外占空间。克隆出来的是正常的独立文件，改动或删除其中一个不影响另一个。非 APFS 的磁盘会自动退回普通复制。
+- **无样本模式分出了上百个「人物N」？** 1.1.0 起，只有在多张照片里出现过、且检测置信度足够高的人才会单独建组，偶然入镜的路人会归入「_未识别」。这个门槛可以在「整理设置」里改（改成 1 即恢复旧行为）。
 - **我的照片会被上传吗？** 不会，全部在你本机运行。
 
 ### 进阶用法

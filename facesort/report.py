@@ -72,11 +72,24 @@ def build_report(
     return report
 
 
-def write_report(report: dict[str, Any], output_dir: Path) -> Path:
+def write_report(report: dict[str, Any], output_dir: Path) -> Optional[Path]:
+    """Write report.json. Returns None (and notes it in `report["warnings"]`) if
+    it cannot be written.
+
+    Never raises: this runs after every photo has already been copied, and a
+    disk that filled up on the last file must not throw away the record of what
+    the run did — that record is how the user finds out which photos failed."""
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "report.json"
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    except (OSError, ValueError) as e:
+        report.setdefault("warnings", []).append(f"运行报告写入失败: {e}")
+        report["report_written"] = False
+        return None
+    report["report_written"] = True
     return path
 
 
@@ -115,6 +128,8 @@ def format_summary(report: dict[str, Any]) -> str:
         ex = report["execution"]
         add(f"执行: 复制 {ex['copied']}  移动 {ex['moved']}  幂等跳过 {ex['skipped_existing']}"
             + (f"  错误 {len(ex['errors'])}" if ex["errors"] else ""))
+        if ex.get("cloned"):
+            add(f"其中 {ex['cloned']} 张为 APFS 秒级克隆，不额外占用磁盘空间")
     if report["ambiguous"]:
         add(f"歧义匹配 {len(report['ambiguous'])} 处（前两名相似度差 < 阈值），建议人工复核，详见 report.json")
     if report["date_fallback_mtime"]:

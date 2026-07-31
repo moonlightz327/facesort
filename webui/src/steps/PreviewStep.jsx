@@ -1,10 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, onEvent } from "../api.js";
-import { Button, Card, Icon, Spinner, Thumb, Badge, ProgressBar, cx } from "../ui.jsx";
+import { Button, Card, Icon, LazyThumb, Spinner, Badge, ProgressBar, cx } from "../ui.jsx";
 import { StepHeader, StepNav } from "./StepShell.jsx";
 import ModelSetup from "../ModelSetup.jsx";
 import ModelProgress from "../ModelProgress.jsx";
+import Lightbox from "../Lightbox.jsx";
 import { stageLabel, stagePercent } from "../stages.js";
+
+// How many tiles a group shows collapsed, and how many more each 「显示更多」
+// adds. Groups run to thousands of photos on a real shoot, so the DOM is paged
+// even when the group is expanded.
+const COLLAPSED = 8;
+const PAGE = 120;
 
 const KIND_STYLE = {
   person: { tone: "indigo", icon: "users" },
@@ -23,6 +30,9 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
   const [cancelling, setCancelling] = useState(false);
   const [modelIssue, setModelIssue] = useState(null); // model status when missing
   const [openGroup, setOpenGroup] = useState(null);
+  // Which photo is open full-screen: {items, index}. Kept here rather than per
+  // group so ←/→ can walk the whole group the tile came from.
+  const [viewing, setViewing] = useState(null);
   const started = useRef(false);
 
   useEffect(() => {
@@ -106,6 +116,7 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
                   {progress.current}
                 </div>
               )}
+              <LiveTally tally={progress.tally} />
             </>
           )}
           <div className="mt-6">
@@ -226,65 +237,39 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
       )}
 
       <div className="space-y-4">
-        {[...people, ...others].map((g) => {
-          const st = KIND_STYLE[g.kind];
-          const isOpen = openGroup === g.key;
-          const shown = isOpen ? g.items : g.items.slice(0, 8);
-          return (
-            <Card key={g.key} className="p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <span
-                    className={cx(
-                      "flex h-8 w-8 items-center justify-center rounded-lg",
-                      g.kind === "person"
-                        ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
-                        : g.kind === "unrecognized"
-                        ? "bg-amber-100 text-amber-600 dark:bg-amber-950 dark:text-amber-300"
-                        : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
-                    )}
-                  >
-                    <Icon name={st.icon} className="w-4 h-4" />
-                  </span>
-                  {config.mode === "cluster" && g.kind === "person" ? (
-                    <ClusterName
-                      cluster={g.label}
-                      value={config.clusterNames?.[g.label] || ""}
-                      onChange={(name) =>
-                        setConfig((c) => ({
-                          ...c,
-                          clusterNames: { ...(c.clusterNames || {}), [g.label]: name },
-                        }))
-                      }
-                    />
-                  ) : (
-                    <span className="font-semibold">{g.label}</span>
-                  )}
-                  <Badge tone={st.tone}>{g.count} 张</Badge>
-                </div>
-                {g.items.length > 8 && (
-                  <Button variant="ghost" onClick={() => setOpenGroup(isOpen ? null : g.key)}>
-                    {isOpen ? "收起" : `查看全部 ${g.count} 张`}
-                  </Button>
-                )}
-              </div>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
-                {shown.map((it) => (
-                  <Thumb key={it.src} src={it.thumb} alt="" className="aspect-square" title={it.name} />
-                ))}
-                {!isOpen && g.items.length > 8 && (
-                  <button
-                    onClick={() => setOpenGroup(g.key)}
-                    className="flex aspect-square items-center justify-center rounded-lg bg-slate-100 text-xs text-slate-500 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
-                  >
-                    +{g.items.length - 8}
-                  </button>
-                )}
-              </div>
-            </Card>
-          );
-        })}
+        {[...people, ...others].map((g) => (
+          <GroupCard
+            key={g.key}
+            group={g}
+            isOpen={openGroup === g.key}
+            onToggle={() => setOpenGroup(openGroup === g.key ? null : g.key)}
+            onView={(index) => setViewing({ items: g.items, index })}
+            nameEditor={
+              config.mode === "cluster" && g.kind === "person" ? (
+                <ClusterName
+                  cluster={g.label}
+                  value={config.clusterNames?.[g.label] || ""}
+                  onChange={(name) =>
+                    setConfig((c) => ({
+                      ...c,
+                      clusterNames: { ...(c.clusterNames || {}), [g.label]: name },
+                    }))
+                  }
+                />
+              ) : null
+            }
+          />
+        ))}
       </div>
+
+      {viewing && (
+        <Lightbox
+          items={viewing.items}
+          index={viewing.index}
+          onIndex={(index) => setViewing((v) => ({ ...v, index }))}
+          onClose={() => setViewing(null)}
+        />
+      )}
 
       {preview.ambiguous?.length > 0 && (
         <div className="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
@@ -299,6 +284,103 @@ export default function PreviewStep({ config, setConfig, preview, setPreview, go
         nextLabel={config.move ? "开始整理（移动）" : "开始整理（复制）"}
       />
     </div>
+  );
+}
+
+/**
+ * Per-person counts as recognition runs. Photos are matched one at a time on
+ * the way through, so there is no reason to make the user stare at a bare
+ * progress bar until the very end to learn how the split is going.
+ */
+function LiveTally({ tally }) {
+  if (!tally?.length) return null;
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+      <div className="mb-2 text-xs text-slate-400">已认出（还在继续）</div>
+      <div className="flex flex-wrap gap-1.5">
+        {tally.map(([name, n]) => (
+          <span
+            key={name}
+            className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-xs text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
+          >
+            {name}
+            <b className="tabular-nums font-semibold">{n}</b>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One classification bucket. Collapsed it shows a strip of tiles; expanded it
+ * pages through the group so a 3000-photo person does not put 3000 nodes in the
+ * DOM. Any tile opens full-screen — at 96px you often cannot tell who is in a
+ * shot, which is exactly the call this step asks the user to make.
+ */
+function GroupCard({ group: g, isOpen, onToggle, onView, nameEditor }) {
+  const st = KIND_STYLE[g.kind];
+  const [limit, setLimit] = useState(PAGE);
+
+  useEffect(() => {
+    if (!isOpen) setLimit(PAGE);
+  }, [isOpen]);
+
+  const shown = isOpen ? g.items.slice(0, limit) : g.items.slice(0, COLLAPSED);
+  const hidden = g.items.length - shown.length;
+
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <span
+            className={cx(
+              "flex h-8 w-8 items-center justify-center rounded-lg",
+              g.kind === "person"
+                ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
+                : g.kind === "unrecognized"
+                ? "bg-amber-100 text-amber-600 dark:bg-amber-950 dark:text-amber-300"
+                : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+            )}
+          >
+            <Icon name={st.icon} className="w-4 h-4" />
+          </span>
+          {nameEditor || <span className="font-semibold">{g.label}</span>}
+          <Badge tone={st.tone}>{g.count} 张</Badge>
+        </div>
+        {g.items.length > COLLAPSED && (
+          <Button variant="ghost" onClick={onToggle}>
+            {isOpen ? "收起" : `查看全部 ${g.count} 张`}
+          </Button>
+        )}
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
+        {shown.map((it, i) => (
+          <LazyThumb
+            key={it.src}
+            path={it.src}
+            className="aspect-square"
+            title={`${it.name}${it.reason ? `\n${it.reason}` : ""}`}
+            onOpen={() => onView(i)}
+          />
+        ))}
+        {hidden > 0 && (
+          <button
+            onClick={() => (isOpen ? setLimit((n) => n + PAGE) : onToggle())}
+            className="flex aspect-square items-center justify-center rounded-lg bg-slate-100 text-xs text-slate-500 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
+          >
+            +{hidden}
+          </button>
+        )}
+      </div>
+      {isOpen && hidden > 0 && (
+        <div className="mt-3 text-center">
+          <Button variant="ghost" onClick={() => setLimit((n) => n + PAGE)}>
+            再显示 {Math.min(hidden, PAGE)} 张（还有 {hidden} 张）
+          </Button>
+        </div>
+      )}
+    </Card>
   );
 }
 
